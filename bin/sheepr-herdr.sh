@@ -38,12 +38,43 @@ SHEEPR_AGENT_KINDS="cursor claude codex"
 # claude: --dangerously-skip-permissions reaches "bypass permissions on".
 # codex:  workspace-write plus never-ask is enough, but an out-of-date codex
 #         stops at an update prompt. herdr does report that one as `blocked`.
+#
+#         workspace-write also permits writes only inside the worktree and
+#         tmp, and the task's status log is in $SHEEPR_HOME/tasks/<id>/, which
+#         is neither. Without --add-dir on that directory the worker's every
+#         append is denied and it can never report question, blocked or done.
+#         Needs codex-cli 0.140 or newer.
+#
+#         SHEEPR_CODEX_PROFILE, when set and non-empty, starts codex under
+#         `-p <profile>`. Unset, codex picks its own profile as before.
 
-sheepr_kind_args() {  # <kind> -> native args, space separated
-  case "$1" in
-    cursor) printf '%s' '--force --trust' ;;
-    claude) printf '%s' '--dangerously-skip-permissions' ;;
-    codex)  printf '%s' '-s workspace-write -a never' ;;
+# Letters, digits, `-` and `_`, and never a leading `-`: a value codex would
+# read as a flag rather than as the name of a profile is not a profile.
+SHEEPR_CODEX_PROFILE_RE='^[A-Za-z0-9][A-Za-z0-9_-]*$'
+
+# Fill SHEEPR_KIND_ARGS with the native launch args for <kind>.
+#
+# An array rather than a string: the codex task directory is a path the
+# captain chose, and a caller that word-splits a flat string would cut one
+# containing a space into two arguments, the tail of which codex reads as a
+# flag.
+sheepr_kind_args() {  # <kind> [task-dir]
+  local kind=$1 task_dir=${2:-}
+  SHEEPR_KIND_ARGS=()
+  case "$kind" in
+    cursor) SHEEPR_KIND_ARGS=(--force --trust) ;;
+    claude) SHEEPR_KIND_ARGS=(--dangerously-skip-permissions) ;;
+    codex)
+      SHEEPR_KIND_ARGS=(-s workspace-write -a never)
+      if [ -n "$task_dir" ]; then
+        SHEEPR_KIND_ARGS+=(--add-dir "$task_dir")
+      fi
+      if [ -n "${SHEEPR_CODEX_PROFILE:-}" ]; then
+        [[ $SHEEPR_CODEX_PROFILE =~ $SHEEPR_CODEX_PROFILE_RE ]] \
+          || die "SHEEPR_CODEX_PROFILE must match $SHEEPR_CODEX_PROFILE_RE"
+        SHEEPR_KIND_ARGS+=(-p "$SHEEPR_CODEX_PROFILE")
+      fi
+      ;;
     *) return 1 ;;
   esac
 }
@@ -147,18 +178,21 @@ sheepr_workspace_by_label() {  # <label>
 # --- agents -----------------------------------------------------------------
 
 # Start an agent of <kind> in an existing pane, under a stable name.
+#
+# <task-dir> is the task's directory in SHEEPR_HOME. It is optional only so a
+# caller with no task can still start an agent; a codex worker without it
+# cannot write its status log.
+#
 # Returns 0 when herdr confirms the agent is interactive, 1 otherwise.
-sheepr_agent_start() {  # <name> <kind> <pane-id>
-  local name=$1 kind=$2 pane=$3 args timeout json code
+sheepr_agent_start() {  # <name> <kind> <pane-id> [task-dir]
+  local name=$1 kind=$2 pane=$3 task_dir=${4:-} timeout json code
 
   sheepr_kind_valid "$kind" || { warn "unknown agent kind: $kind"; return 1; }
-  args=$(sheepr_kind_args "$kind")
+  sheepr_kind_args "$kind" "$task_dir"
   timeout=$(sheepr_kind_timeout "$kind")
 
-  # Word splitting on $args is intended: the table holds separate flags.
-  # shellcheck disable=SC2086
   json=$(herdr agent start "$name" --kind "$kind" --pane "$pane" \
-           --timeout "$timeout" -- $args 2>&1) || true
+           --timeout "$timeout" -- "${SHEEPR_KIND_ARGS[@]}" 2>&1) || true
 
   code=$(printf '%s' "$json" | jq -r '.error.code // empty' 2>/dev/null)
 

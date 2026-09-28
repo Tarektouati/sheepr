@@ -15,6 +15,14 @@
 #   - when the brief still contains a {{placeholder}}.
 #   - when the task id is already in use.
 #
+# Environment:
+#   SHEEPR_CODEX_PROFILE  when set and non-empty, a codex worker is started
+#                         with `-p <profile>`. Letters, digits, `-` and `_`
+#                         only, and not a leading `-`; anything else is
+#                         refused. Deliberately not a flag: which codex
+#                         profile works is a property of the machine the
+#                         fleet runs on, not of one task.
+#
 # The brief is never passed through argv. Every agent kind quotes, truncates
 # and strips characters differently, so the brief goes to a file and the
 # prompt is one short fixed line that points at it.
@@ -194,7 +202,7 @@ BRIEF_TAIL
 
 # --- launch -----------------------------------------------------------------
 
-if ! sheepr_agent_start "$NAME" "$KIND" "$PANE"; then
+if ! sheepr_agent_start "$NAME" "$KIND" "$PANE" "$TASK_DIR"; then
   warn "worker did not become ready; the workspace is left in place for inspection"
   warn "workspace=$WS pane=$PANE worktree=$WORKTREE"
   exit 1

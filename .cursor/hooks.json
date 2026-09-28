@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      {
+        "type": "command",
+        "command": "\"$CURSOR_PROJECT_DIR\"/bin/sheepr-watch.sh --hook",
+        "timeout": 28800,
+        "loop_limit": 200
+      }
+    ]
+  }
+}

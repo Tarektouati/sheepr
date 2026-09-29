@@ -14,14 +14,19 @@
 #
 # Evidence required, by delivery mode:
 #
-#   pr      a full https:// URL in a done line, and `gh` confirms the pull
-#           request exists.
-#   branch  the branch exists on the remote at the same commit as locally.
-#   local   at least one commit on the branch that the base branch does not
-#           have.
+#   pr      a pull request for this branch that is either merged AT THIS
+#           COMMIT, or open with nothing left unpushed. A closed unmerged
+#           pull request is refused: abandoning work is the captain's call.
+#   branch  an upstream on the remote with nothing unpushed.
+#   local   at least one commit the base branch does not have.
 #
 # In every mode the worktree must have no uncommitted change. brief.md is
 # excluded at spawn time so it does not count against this.
+#
+# All of that evidence is read from flock, which already resolves the base
+# branch properly, compares against the remote base so forge-side merges are
+# visible, and knows a merged pull request only counts when it merged the
+# current HEAD. The versions this script used to carry got the last two wrong.
 
 set -uo pipefail
 
@@ -29,6 +34,8 @@ set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sheepr-herdr.sh"
 # shellcheck source=bin/sheepr-status.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sheepr-status.sh"
+# shellcheck source=bin/sheepr-flock.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sheepr-flock.sh"
 
 [ $# -ge 1 ] || die "usage: sheepr-teardown.sh <task-id> [--force]"
 ID=$1; shift
@@ -54,38 +61,80 @@ refuse() { printf 'sheepr: refusing to tear down %s: %s\n' "$ID" "$1" >&2; exit 
 # --- prove the work landed --------------------------------------------------
 
 if [ "$FORCE" = 0 ]; then
+  # Fail here rather than inside the command substitution below, where a die()
+  # would only kill the subshell. --force needs no evidence, so it needs no
+  # flock either.
+  sheepr_flock_require
+
   [ -d "$WORKTREE" ] || refuse "the worktree is gone: $WORKTREE (use --force only if the captain said to discard)"
 
-  dirty=$(git -C "$WORKTREE" status --porcelain 2>/dev/null)
-  if [ -n "$dirty" ]; then
-    refuse "the worktree has uncommitted changes:
-$(printf '%s' "$dirty" | head -10)"
-  fi
+  STATUS_JSON=$(sheepr_flock_status "$REPO") \
+    || refuse "flock could not read $REPO, so nothing about this worktree can be proved"
+  ROW=$(sheepr_flock_row "$STATUS_JSON" "$WORKTREE") \
+    || refuse "flock reports no worktree at $WORKTREE"
+  BASE_REF=$(sheepr_flock_base_ref "$STATUS_JSON")
+
+  field() { printf '%s' "$ROW" | jq -r "$1"; }
+
+  # A null dirty count means git could not read the worktree. That is unknown,
+  # not clean, and unknown is never evidence.
+  dirty=$(field '.dirty')
+  [ "$dirty" != null ] \
+    || refuse "git could not read the worktree state, so it cannot be proved clean"
+  [ "$dirty" = 0 ] \
+    || refuse "the worktree has $dirty uncommitted change(s); commit or discard them first"
 
   case "$DELIVERY" in
     pr)
-      url=$(sheepr_status_fold "$ID" | grep -oE 'https://[^ ]+' | head -1)
-      [ -n "$url" ] || refuse "delivery is 'pr' but no done line carries an https:// URL"
-      command -v gh >/dev/null 2>&1 || refuse "delivery is 'pr' but gh is not installed, so the pull request cannot be verified"
-      state=$(gh pr view "$url" --json state -q .state 2>/dev/null) \
-        || refuse "gh could not read the pull request at $url"
-      printf 'pull request %s is %s\n' "$url" "$state"
+      [ "$(printf '%s' "$STATUS_JSON" | jq -r '.pr_lookup')" = true ] \
+        || refuse "delivery is 'pr' but pull requests could not be looked up (is gh installed and authenticated?)"
+
+      pr_state=$(field '.pr.state // ""')
+      pr_url=$(field '.pr.url // ""')
+      [ -n "$pr_state" ] \
+        || refuse "delivery is 'pr' but no pull request was found for $BRANCH"
+
+      unpushed=$(field '.unpushed // 0')
+      case "$pr_state" in
+        MERGED)
+          # A merged pull request only counts when it merged THIS commit. A
+          # reused branch name, or commits pushed after the merge, would
+          # otherwise look landed while real work is thrown away.
+          [ "$(field '.pr.head_matches')" = true ] \
+            || refuse "$pr_url is merged, but not at this branch's current commit: there is work after the merge that has not landed"
+          printf 'pull request %s is merged at this commit\n' "$pr_url"
+          ;;
+        OPEN)
+          [ "${unpushed:-0}" = 0 ] \
+            || refuse "$pr_url is open but $unpushed commit(s) here are not pushed; they exist nowhere else"
+          printf 'pull request %s is open and fully pushed\n' "$pr_url"
+          ;;
+        CLOSED)
+          refuse "$pr_url was closed without merging, so the work has not landed. Discarding it is the captain's call: use --force only if they said so"
+          ;;
+        *)
+          refuse "$pr_url is in an unrecognised state: $pr_state"
+          ;;
+      esac
       ;;
     branch)
-      local_sha=$(git -C "$WORKTREE" rev-parse "$BRANCH" 2>/dev/null) \
-        || refuse "branch $BRANCH does not exist"
-      remote_sha=$(git -C "$WORKTREE" ls-remote origin "refs/heads/$BRANCH" 2>/dev/null | awk '{print $1}')
-      [ -n "$remote_sha" ] || refuse "delivery is 'branch' but $BRANCH is not on the remote"
-      [ "$local_sha" = "$remote_sha" ] \
-        || refuse "delivery is 'branch' but the remote $BRANCH is at $remote_sha, not $local_sha"
-      printf 'branch %s is pushed at %s\n' "$BRANCH" "${local_sha:0:8}"
+      [ "$(field '.upstream_gone')" != true ] \
+        || refuse "delivery is 'branch' but the upstream for $BRANCH has gone from the remote"
+      upstream=$(field '.upstream // ""')
+      [ -n "$upstream" ] \
+        || refuse "delivery is 'branch' but $BRANCH has no upstream on the remote"
+      unpushed=$(field '.unpushed // 0')
+      [ "${unpushed:-0}" = 0 ] \
+        || refuse "delivery is 'branch' but $unpushed commit(s) are not pushed"
+      printf 'branch %s is pushed to %s\n' "$BRANCH" "$upstream"
       ;;
     local)
-      base=$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null) || base=main
-      ahead=$(git -C "$WORKTREE" rev-list --count "$base..$BRANCH" 2>/dev/null) || ahead=0
-      [ "${ahead:-0}" -gt 0 ] \
-        || refuse "delivery is 'local' but $BRANCH has no commit that $base does not already have"
-      printf 'branch %s holds %s commit(s) not on %s\n' "$BRANCH" "$ahead" "$base"
+      ahead=$(field '.ahead')
+      [ "$ahead" != null ] \
+        || refuse "$BASE_REF could not be resolved, so $BRANCH cannot be compared against it"
+      [ "$ahead" -gt 0 ] \
+        || refuse "delivery is 'local' but $BRANCH has no commit that $BASE_REF does not already have"
+      printf 'branch %s holds %s commit(s) not on %s\n' "$BRANCH" "$ahead" "$BASE_REF"
       ;;
     *)
       refuse "unknown delivery mode '$DELIVERY'"

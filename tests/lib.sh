@@ -65,6 +65,40 @@ write_status() {  # <task-id>
   cat >"$SHEEPR_HOME/tasks/$1/status"
 }
 
+# --- fake flock -------------------------------------------------------------
+#
+# Point sheepr at tests/fake-flock and feed it a canned status document, so
+# gates are tested without a live Herdr, a real remote, or gh.
+
+use_fake_flock() {
+  SHEEPR_FLOCK="$SHEEPR_ROOT/tests/fake-flock"
+  FAKE_FLOCK_JSON="$SHEEPR_HOME/flock-status.json"
+  export SHEEPR_FLOCK FAKE_FLOCK_JSON
+}
+
+# Build one worktree row. Defaults describe a clean, landed-nowhere worktree;
+# pass jq assignments to change individual fields.
+#   flock_row /path/to/wt 'sheepr/x' '.dirty = 3 | .ahead = 2'
+flock_row() {  # <path> <branch> [jq-overrides]
+  jq -nc --arg p "$1" --arg b "$2" '{
+    branch: $b, path: $p, linked: true, prunable: false, detached: false,
+    exists: true, head: "deadbeef", workspace_id: "w9", agents: [],
+    dirty: 0, ahead: 0, behind: 0,
+    upstream: null, upstream_gone: false, unpushed: null,
+    contained_in_base: true, pr: null
+  }' | jq -c "${3:-.}"
+}
+
+# Write a status document made of the given rows into the fake's fixture.
+flock_doc() {  # <row-json>...
+  local rows
+  rows=$(printf '%s\n' "$@" | jq -sc '.')
+  jq -nc --argjson w "$rows" '{
+    repo_root: "/repo", repo_name: "repo", base: "main",
+    base_ref: "origin/main", pr_lookup: true, worktrees: $w
+  }' >"$FAKE_FLOCK_JSON"
+}
+
 begin() { printf 'FM_TEST_BEGIN %s\n' "$TEST_NAME"; }
 
 summary() {

@@ -49,13 +49,13 @@ Run this before anything else:
 It prints one line if anything needs you, and nothing if the fleet is quiet.
 Then check what exists:
 
-    ls tasks/
-    for t in tasks/*/; do
-      echo "$(basename "$t"): $(./bin/sheepr-status.sh fold "$(basename "$t")")"
-    done
+    ./bin/sheepr-fleet.sh
+
+That shows every worktree, not just the ones sheepr made: each task with its
+folded state, plus any orphan or stale row. Read it before you act.
 
 The fleet survives your death. Tasks you never met may be running. Reconcile
-from `tasks/`, never from memory of the conversation.
+from `tasks/` and from the fleet view, never from memory of the conversation.
 
 ## 4. Starting a task
 
@@ -153,17 +153,39 @@ Each refuses rather than guesses. Read the header comment before using one.
 |---|---|
 | `bin/sheepr-spawn.sh` | create a task and start its worker |
 | `bin/sheepr-watch.sh` | the supervision loop; `--once` for a single pass |
+| `bin/sheepr-fleet.sh` | read-only view of every worktree, task or not |
 | `bin/sheepr-status.sh` | `fold`, `open`, `append` on a status log |
 | `bin/sheepr-send.sh` | reply to a worker, resolve a key, answer a dialog |
 | `bin/sheepr-teardown.sh` | retire a task once its work has landed |
 | `bin/sheepr-test.sh` | run the tests |
 | `bin/sheepr-lint.sh` | check every script |
 
-`bin/sheepr-herdr.sh` is the only file that runs `herdr`. If you need a Herdr
-operation that is not there, add it there rather than calling `herdr` from
-somewhere else.
+Two files are adapters, and nothing else may bypass them.
+`bin/sheepr-herdr.sh` is the only file that runs `herdr`.
+`bin/sheepr-flock.sh` is the only file that runs `flock`.
+If you need an operation that is not there, add it there.
 
-## 10. Changing sheepr itself
+## 10. flock
+
+sheepr depends on the [flock](https://github.com/Tarektouati/skills/tree/main/flock)
+skill for git and worktree analysis: which branch is the base, what is pushed,
+and whether a pull request really merged the current commit. sheepr reads
+flock's JSON and never sources its shell.
+
+flock is also a skill you can use directly, and it covers the work sheepr
+deliberately will not do. sheepr acts without asking and refuses when
+something is unsafe. flock confirms every state-changing action with the
+captain, one at a time. That makes it the right tool for:
+
+- Triaging an orphan or stale row from `sheepr-fleet.sh`. sheepr will not
+  touch a worktree it does not own.
+- Rebasing or syncing a worktree onto a moved base.
+- Cleaning up worktrees and branches left behind by work that predates sheepr.
+
+When the fleet view reports an orphan, tell the captain what it holds,
+especially any uncommitted work, and offer flock. Never remove it yourself.
+
+## 11. Changing sheepr itself
 
 sheepr is a project like any other, so the hard rules still apply: send the
 change to a worker, in a worktree, with a delivery mode.

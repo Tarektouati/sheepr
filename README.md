@@ -18,6 +18,9 @@ the fleet and spends no tokens until something is actionable.
 ## Requirements
 
 - [Herdr](https://herdr.dev) 0.9.1 or newer, and you must be inside a Herdr pane
+- The [flock](https://github.com/Tarektouati/skills/tree/main/flock) skill,
+  installed at `~/.agents/skills/flock` or `~/.claude/skills/flock`, or pointed
+  at by `SHEEPR_FLOCK`
 - `git`, `jq`
 - At least one of `cursor-agent`, `claude`, `codex`
 - `gh`, only if you use `--delivery pr`
@@ -42,6 +45,9 @@ its own worktree, and tell you when there is something to decide.
 ## By hand
 
 ```sh
+# see everything: tasks, plus worktrees sheepr did not make
+./bin/sheepr-fleet.sh
+
 # start a task
 ./bin/sheepr-spawn.sh ~/code/myapp fix-login \
     --kind cursor --delivery pr --brief /tmp/brief.md
@@ -100,6 +106,22 @@ tests/       run with ./bin/sheepr-test.sh
 ```
 
 Tests that need a live Herdr print `skip:` when one is not available.
+
+## flock
+
+Git and worktree analysis is delegated to the
+[flock](https://github.com/Tarektouati/skills/tree/main/flock) skill: base
+branch resolution, what is pushed, and whether a pull request merged the
+current commit. sheepr reads flock's JSON output and never sources its shell.
+
+The two tools sit on opposite gates, deliberately. sheepr acts without asking
+and refuses when something is unsafe, because a supervisor that stops to
+confirm every spawn is not delegating. flock confirms every state-changing
+action with you, which makes it the right tool for the interactive work sheepr
+declines: triaging orphaned worktrees, rebasing, cleaning up by hand.
+
+`sheepr-fleet.sh` is where they meet. It reports orphans; flock helps you
+decide what to do about them.
 
 ## Credit
 

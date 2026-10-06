@@ -45,8 +45,16 @@ runs, and the supervisor turns it into a short update for the captain.
 - `pr` - a pull request is opened and its URL is reported.
 - `branch` - the branch is pushed, no pull request.
 - `local` - commits stay on the local branch.
+- `report` - no code change; findings are written to `tasks/<id>/report.md`.
 
 There is no default. The supervisor asks the captain every time.
+
+**scout** - a task with delivery `report`. It investigates and proposes; it
+never changes code.
+
+**proposal** - a suggested task the captain may pick, never one the
+supervisor starts on its own. From a scout's report, from the supervisor's
+"Proposed next" items, or from `tasks/.sheepr-proposals` for sheepr itself.
 
 ## Actions
 

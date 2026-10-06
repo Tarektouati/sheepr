@@ -59,6 +59,10 @@ its own worktree, and tell you when there is something to decide.
 # what is every worker doing?
 ./bin/sheepr-report.sh
 
+# send a scout: no code change, proposals in tasks/perf-ideas/report.md
+./bin/sheepr-spawn.sh ~/code/myapp perf-ideas \
+    --kind claude --delivery report --brief /tmp/scout.md
+
 # answer a question the worker raised
 ./bin/sheepr-send.sh fix-login "Use the second approach." --resolve approach
 

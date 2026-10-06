@@ -19,6 +19,7 @@
 #           pull request is refused: abandoning work is the captain's call.
 #   branch  an upstream on the remote with nothing unpushed.
 #   local   at least one commit the base branch does not have.
+#   report  a non-empty tasks/<id>/report.md. It is archived with the task.
 #
 # In every mode the worktree must have no uncommitted change. brief.md is
 # excluded at spawn time so it does not count against this.
@@ -135,6 +136,12 @@ if [ "$FORCE" = 0 ]; then
       [ "$ahead" -gt 0 ] \
         || refuse "delivery is 'local' but $BRANCH has no commit that $BASE_REF does not already have"
       printf 'branch %s holds %s commit(s) not on %s\n' "$BRANCH" "$ahead" "$BASE_REF"
+      ;;
+    report)
+      report=$(sheepr_task_dir "$ID")/report.md
+      [ -s "$report" ] \
+        || refuse "delivery is 'report' but $report is missing or empty"
+      printf 'report %s is written; it is kept in the archive\n' "$report"
       ;;
     *)
       refuse "unknown delivery mode '$DELIVERY'"

@@ -3,7 +3,10 @@
 #
 # Usage:
 #   sheepr-spawn.sh <repo-path> <task-id> --kind <cursor|claude|codex> \
-#                   --delivery <pr|branch|local> --brief <file>
+#                   --delivery <pr|branch|local|report> --brief <file>
+#
+# --delivery report makes a scout: the worker changes no code and writes its
+# findings, as proposals, to tasks/<id>/report.md.
 #
 # Owns: creating the worktree workspace, writing the task metadata and brief,
 # starting the worker, and delivering the doorbell prompt.
@@ -33,7 +36,7 @@ set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sheepr-herdr.sh"
 
 usage() {
-  sed -n '3,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '3,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 2
 }
 
@@ -62,10 +65,10 @@ sheepr_validate_id "$ID"
 [ -n "$KIND" ] || die "--kind is required (one of: $SHEEPR_AGENT_KINDS)"
 sheepr_kind_valid "$KIND" || die "unknown --kind '$KIND' (one of: $SHEEPR_AGENT_KINDS)"
 
-[ -n "$DELIVERY" ] || die "--delivery is required (pr, branch, or local). There is no default: ask the captain."
+[ -n "$DELIVERY" ] || die "--delivery is required (pr, branch, local, or report). There is no default: ask the captain."
 case "$DELIVERY" in
-  pr|branch|local) ;;
-  *) die "unknown --delivery '$DELIVERY' (pr, branch, or local)" ;;
+  pr|branch|local|report) ;;
+  *) die "unknown --delivery '$DELIVERY' (pr, branch, local, or report)" ;;
 esac
 
 [ -n "$BRIEF" ] || die "--brief <file> is required"
@@ -118,6 +121,19 @@ case "$DELIVERY" in
   pr)     EVIDENCE='Open a pull request with `gh pr create` and put its full https:// URL in the done line.' ;;
   branch) EVIDENCE='Push the branch with `git push -u origin '"$BRANCH"'` and put the branch name in the done line.' ;;
   local)  EVIDENCE='Commit your work on this branch and leave it unpushed. Put the final commit subject in the done line.' ;;
+  report) EVIDENCE="You are a scout. Do not change, create or commit any file in this worktree.
+Write your findings to this file, and nowhere else:
+
+    $TASK_DIR/report.md
+
+One section per proposal, most valuable first:
+
+    ## <n>. <title>
+    - Why: <the problem or opportunity, with file paths as evidence>
+    - Size: S, M or L
+    - Risk: <what could break>
+
+Put the number of proposals in the done line." ;;
 esac
 
 cp "$BRIEF" "$TASK_DIR/brief.md"

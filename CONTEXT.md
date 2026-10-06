@@ -36,6 +36,10 @@ Key and value, one per line. Where the task's workspace, pane, worktree, branch,
 **wake** - a reason the supervisor must take a turn.
 Written to `tasks/.wakes` and printed by the watcher.
 
+**watcher** - the one `bin/sheepr-watch.sh` process that owns the fleet,
+holding `tasks/.watch.lock`. It runs in the background and wakes the
+supervisor; any other watcher that finds the lock held leaves.
+
 **delivery** - how finished work reaches the captain. One of:
 
 - `pr` - a pull request is opened and its URL is reported.

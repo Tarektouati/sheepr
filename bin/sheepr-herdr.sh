@@ -249,6 +249,19 @@ sheepr_agent_state() {  # <name-or-pane-id>
   esac
 }
 
+# The harness running in <pane-id>, as herdr names it (cursor, claude, codex).
+#
+# Returns 1 when herdr finds no agent there: the pane is gone, or it holds a
+# bare shell. A caller about to type into the pane must treat that as "do not
+# type", because text submitted to a shell prompt runs as a command.
+sheepr_pane_agent() {  # <pane-id>
+  local json agent
+  json=$(herdr agent get "$1" 2>/dev/null) || true
+  agent=$(printf '%s' "$json" | jq -r '.result.agent.agent // empty' 2>/dev/null) || return 1
+  [ -n "$agent" ] || return 1
+  printf '%s' "$agent"
+}
+
 # Submit a prompt. Deliberately does NOT pass --wait.
 #
 # `herdr agent prompt --wait` is not a completion signal: its own help states

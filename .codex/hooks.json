@@ -1,0 +1,17 @@
+{
+  "description": "sheepr: arm the background watcher at the end of every supervisor turn.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$(git rev-parse --show-toplevel)/bin/sheepr-watch.sh\" --hook codex",
+            "async": true,
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

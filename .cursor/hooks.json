@@ -4,8 +4,8 @@
     "stop": [
       {
         "type": "command",
-        "command": "\"$CURSOR_PROJECT_DIR\"/bin/sheepr-watch.sh --hook",
-        "timeout": 28800,
+        "command": "\"$CURSOR_PROJECT_DIR\"/bin/sheepr-watch.sh --hook cursor",
+        "timeout": 30,
         "loop_limit": 200
       }
     ]

@@ -47,11 +47,54 @@ its own worktree, and tell you when there is something to decide.
 
 ## Staying informed
 
-You never have to ask the supervisor for updates. When its turn ends, a hook
-starts the watcher, and the watcher hands the supervisor a new turn as soon as
-something is actionable.
+You never have to ask the supervisor for updates, and it never makes you wait
+while it watches. The watcher runs in the background. You can keep talking to
+the supervisor while workers run, and the watcher hands it a new turn as soon
+as something is actionable.
 
-The hook is in `.cursor/hooks.json`:
+The supervisor can be `cursor-agent`, `claude` or `codex`. Each arms the
+watcher differently, because each offers a different way to wake an idle
+session:
+
+| supervisor | how the watcher runs | how a wake reaches it |
+|---|---|---|
+| Claude Code | `Stop` hook with `asyncRewake`, in `.claude/settings.json`, running `--hook claude` | the hook exits 2 with the wake on stderr, which wakes Claude even when it is idle |
+| Cursor | `./bin/sheepr-watch.sh`, started by the supervisor as a background shell command | the finished command's completion follow-up |
+| Codex | async `Stop` hook in `.codex/hooks.json`, running `--hook codex`, which starts a detached `--wake-pane` watcher | the watcher types the wake into the supervisor's Herdr pane once the agent there is idle |
+
+Claude Code:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PROJECT_DIR}\"/bin/sheepr-watch.sh --hook claude",
+            "asyncRewake": true,
+            "timeout": 28800
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Cursor's `stop` hook in `.cursor/hooks.json` is a safety net, and it never
+parks the session. `--hook cursor` does one pass and then gives the turn back:
+
+- It says nothing when a watcher is already running.
+- When it finds something, it prints a `followup_message`, which starts the
+  supervisor's next turn with that line as the prompt:
+
+  ```json
+  {"followup_message": "question: fix-login - retry-policy: retry the flaky call or mark the test as known-flaky?"}
+  ```
+
+- Otherwise, it asks the supervisor to start the background watcher.
 
 ```json
 {
@@ -60,8 +103,8 @@ The hook is in `.cursor/hooks.json`:
     "stop": [
       {
         "type": "command",
-        "command": "\"$CURSOR_PROJECT_DIR\"/bin/sheepr-watch.sh --hook",
-        "timeout": 28800,
+        "command": "\"$CURSOR_PROJECT_DIR\"/bin/sheepr-watch.sh --hook cursor",
+        "timeout": 30,
         "loop_limit": 200
       }
     ]
@@ -69,22 +112,55 @@ The hook is in `.cursor/hooks.json`:
 }
 ```
 
-`sheepr-watch.sh --hook` polls the fleet like the plain watcher. When it finds
-something, it prints a Cursor `followup_message`, which starts the supervisor's
-next turn with that line as the prompt:
+Cursor also loads Claude Code hooks from `.claude/settings.json`. It does not
+support `asyncRewake`, so it would run that hook in the foreground. When
+`CURSOR_VERSION` is set, `--hook claude` exits at once, and Cursor's own hook
+covers the session.
+
+Codex is the exception. Its background hooks and background terminals cannot
+start a turn on an idle session
+([openai/codex#33712](https://github.com/openai/codex/issues/33712)), so its
+wakes go through Herdr. The `--wake-pane` watcher delivers through
+`HERDR_PANE_ID`:
+
+- It waits while the agent in that pane is working or at a dialog.
+- It never types into a pane that has no agent in it: one that is gone, or that
+  holds a bare shell.
+
+There are two costs:
+
+- **Trust:** you must trust sheepr's hook once in Codex's `/hooks` screen.
+- **Mixed text:** a wake typed in while you are typing in the same composer
+  gets mixed with your text.
 
 ```json
-{"followup_message": "question: fix-login - retry-policy: retry the flaky call or mark the test as known-flaky?"}
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$(git rev-parse --show-toplevel)/bin/sheepr-watch.sh\" --hook codex",
+            "async": true,
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
 ```
 
-It gives the turn back without a message in three cases: the fleet has no
-tasks, another watcher already holds the fleet, or it has waited
-`SHEEPR_HOOK_MAX` seconds (default 3600) with nothing to report. That bound
-exists so an idle fleet does not make the supervisor look hung. The next turn
-re-arms the hook.
+The Claude and Codex watchers stop with nothing to report in four cases:
 
-The hook is Cursor's. A supervisor in another harness runs
-`./bin/sheepr-watch.sh` itself, as `AGENTS.md` tells it to.
+- the fleet has no tasks;
+- another watcher already owns the fleet;
+- `SHEEPR_HOOK_MAX` seconds (default 28000) have passed;
+- for `--wake-pane`, the pane no longer holds an agent.
+
+The next turn end re-arms them. Workers started in a sheepr worktree load these
+hooks too, but their `tasks/` is empty, so the hooks exit at once.
 
 ### What reaches you
 
@@ -242,12 +318,17 @@ branch already exists.
 
 ### sheepr-watch.sh
 
-The supervision loop. It spends no tokens while it waits.
+The supervision loop. It spends no tokens while it waits. A supervisor runs it
+in the background (see Staying informed). Run by hand, it blocks your shell
+until it wakes.
 
 ```sh
-./bin/sheepr-watch.sh           # poll until something is actionable, print one line, exit
-./bin/sheepr-watch.sh --once    # one pass, no sleeping
-./bin/sheepr-watch.sh --hook    # as the default, but print a Cursor followup_message
+./bin/sheepr-watch.sh                    # poll until something is actionable, print one line, exit
+./bin/sheepr-watch.sh --once             # one pass, no sleeping
+./bin/sheepr-watch.sh --hook cursor      # Cursor stop hook: one pass, never parks; `--hook` alone means this
+./bin/sheepr-watch.sh --hook claude      # Claude Code asyncRewake Stop hook: poll, exit 2 with the wake on stderr
+./bin/sheepr-watch.sh --hook codex       # Codex async Stop hook: start a detached --wake-pane watcher, return
+./bin/sheepr-watch.sh --wake-pane <pane> # poll; type the wake into that Herdr pane once its agent is idle
 ```
 
 ```
@@ -256,8 +337,24 @@ question: fix-login - retry-policy: retry the flaky call or mark the test as kno
 ```
 
 The line it prints starts with one of `question:`, `blocked:`, `done:`,
-`failed:`, `missing:` or `stalled:`. `--once` prints nothing and exits 1 when
-the fleet is quiet. Each wake is also appended to `tasks/.wakes`.
+`failed:`, `missing:` or `stalled:`. Each wake is also appended to
+`tasks/.wakes`.
+
+`--once` exits with:
+
+- 0 when it woke;
+- 1, printing nothing, when the fleet is quiet;
+- 3 when another watcher already owns the fleet.
+
+Only one watcher owns the fleet at a time, through `tasks/.watch.lock`. A
+watcher that finds the lock held leaves without touching task state:
+
+- `--once` and the plain loop print
+  `watching: a watcher already owns the fleet (pid N)`;
+- the hook modes print nothing.
+
+`--wake-pane` writes its output to `tasks/.watch-pane.log`, and records its
+target pane in `tasks/.watch.lock/pane`.
 
 ### sheepr-fleet.sh
 
@@ -396,6 +493,11 @@ long tool call, so `idle` alone means nothing. The watcher uses a ladder:
 Nothing wakes you twice for the same thing. Each wake records a signature, and
 an unchanged signature is absorbed to `tasks/.watch-triage.log` instead.
 
+The signature is recorded only after the wake was delivered: printed, written
+to stderr, or confirmed by Herdr as submitted to the supervisor's pane. A
+watcher killed in between repeats the wake on the next pass rather than losing
+it. A failed delivery records nothing and is retried.
+
 ### The stall rule
 
 The first pass that sees no progress opens a quiet window. While the window is
@@ -432,13 +534,20 @@ All optional. Durations are in seconds.
 |---|---|---|
 | `SHEEPR_POLL` | `15` | seconds between watcher passes |
 | `SHEEPR_STALL` | `240` | seconds a quiet window must last before the worktree is scanned and a stall can wake |
-| `SHEEPR_HOOK_MAX` | `3600` | seconds `--hook` waits before giving the turn back with nothing to report |
+| `SHEEPR_HOOK_MAX` | `28000` | seconds a `--hook claude` or `--wake-pane` watcher waits before giving up with nothing to report. Keep it below the 28800s timeout in `.claude/settings.json`, so Claude never kills the watcher between delivering a wake and recording it |
 | `SHEEPR_SCAN_MAXDEPTH` | `6` | directory depth of the worktree scan |
 | `SHEEPR_SCAN_TIMEOUT` | `10` | seconds before the worktree scan is killed and counted as no evidence |
 | `SHEEPR_FLOCK` | unset | the flock skill directory; must contain an executable `scripts/wt-status.sh`. Checked before `~/.agents/skills/flock` and `~/.claude/skills/flock` |
 | `SHEEPR_HOME` | `SHEEPR_ROOT` | where `tasks/` lives |
 | `SHEEPR_ROOT` | the checkout holding `bin/` | the sheepr checkout |
 | `SHEEPR_CODEX_PROFILE` | unset | when set and non-empty, codex workers start with `-p <profile>`. Letters, digits, `-` and `_` only, and not a leading `-`; anything else is refused |
+
+Two variables are read but never set by you, because the harness sets them:
+
+| variable | set by | what sheepr does with it |
+|---|---|---|
+| `CURSOR_VERSION` | Cursor, in every hook | `--hook claude` exits at once, because Cursor imported it from `.claude/settings.json` and would run it in the foreground |
+| `HERDR_PANE_ID` | Herdr, in every pane | `--hook codex` delivers wakes to this pane. When it is unset, the hook starts no watcher and reports why in a `systemMessage` |
 
 ```sh
 SHEEPR_STALL=600 SHEEPR_POLL=30 ./bin/sheepr-watch.sh
@@ -461,7 +570,9 @@ The scripts refuse rather than guess:
 ```
 AGENTS.md           the supervisor's contract
 CONTEXT.md          the vocabulary
-.cursor/hooks.json  the turn-end hook that runs the watcher
+.claude/settings.json  Claude Code's turn-end hook that arms the watcher
+.codex/hooks.json   Codex's turn-end hook that arms the watcher
+.cursor/hooks.json  Cursor's turn-end hook, a safety net that never parks
 bin/                the scripts; sheepr-herdr.sh is the only one that runs herdr,
                     sheepr-flock.sh the only one that runs flock
 tasks/              per-task state, gitignored
@@ -476,6 +587,8 @@ tasks/<id>/status         the status log
 tasks/<id>/brief.md       the brief as the supervisor wrote it
 tasks/.wakes              every wake, one line each
 tasks/.watch-triage.log   every decision that did not wake
+tasks/.watch.lock/        held by the one watcher that owns the fleet: pid, and pane for --wake-pane
+tasks/.watch-pane.log     output of the detached --wake-pane watcher
 tasks/.archive/           torn-down tasks
 ```
 

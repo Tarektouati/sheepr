@@ -150,6 +150,15 @@ STUB_STATE=working
 out5=$(pass_once); rc5=$?
 is "$rc5" '1' 'a task with nothing open and a working agent is silent'
 
+# Finding a wake records nothing; only delivering it does.
+printf 'question|6|k3|third?\n' >>"$d/status"
+before=$(cat "$d/.woke")
+found=$(find_wake); rcf=$?
+is "$rcf" '0' 'find_wake reports the new question'
+is "$found" "solo	q:k3:third?	question: solo - k3: third?" 'find_wake names the task, signature and reason'
+is "$(cat "$d/.woke")" "$before" 'find_wake leaves .woke alone'
+is "$(grep -c '' "$SHEEPR_WAKES")" '2' 'find_wake leaves the wake queue alone'
+
 rm -rf "$ISOLATED"
 SHEEPR_HOME=$OLD_HOME
 

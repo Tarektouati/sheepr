@@ -37,6 +37,16 @@ is "$rc" '1' 'sending to an unknown task is refused'
 is "$(grep -c '' "$SHEEPR_HOME/tasks/t1/status")" '1' \
   'a refused send appends nothing to the status log'
 
+# --- a flag with no value is refused, not spun on ---------------------------
+#
+# `--resolve` as the last argument used to leave $# at 1 forever: `shift 2`
+# shifts nothing, and the while loop burned a core until the pane was killed.
+
+out=$(run_bounded 5 send t1 'an answer' --resolve); rc=$?
+is "$rc" '1' '--resolve with no value is refused rather than looping forever'
+case "$out" in *'--resolve needs a value'*) ok 'the refusal names the flag' ;;
+  *) fail 'the refusal names the flag' "got: $out" ;; esac
+
 # --- the resolved line carries the answer -----------------------------------
 #
 # sheepr-send.sh needs a live worker to deliver the prompt, so the append
@@ -64,5 +74,41 @@ is "$(tail -1 "$SHEEPR_HOME/tasks/t3/status" | cut -d'|' -f4)" '' \
   'an empty resolved text is still possible, and is what the worker rejected'
 is "$(sheepr_status_fold t3)" 'working||' \
   'the fold still closes it: the fold cannot tell a good answer from an empty one'
+
+# --- answering a dialog clears the wake suppression -------------------------
+#
+# The regression that matters: the worker's next dialog carries the same wake
+# signature as the one just answered. While .woke still holds that signature
+# the watcher absorbs the wake, and the supervisor is never told the worker is
+# parked again.
+#
+# herdr is stubbed on PATH, so no dialog and no live fleet are needed.
+
+if ! command -v jq >/dev/null 2>&1; then
+  skip 'jq is not installed, so sheepr-send.sh refuses before it sends keys'
+else
+  STUB=$(mktemp -d "${TMPDIR:-/tmp}/sheepr-stub-XXXXXX")
+  printf '#!/bin/sh\nexit 0\n' >"$STUB/herdr"
+  chmod +x "$STUB/herdr"
+
+  mktask t4
+  printf 'blocked|1||at a dialog\n' >"$SHEEPR_HOME/tasks/t4/status"
+  printf '%s' 'agent:blocked' >"$SHEEPR_HOME/tasks/t4/.woke"
+
+  out=$(PATH="$STUB:$PATH" HERDR_ENV=1 \
+    "$SHEEPR_ROOT/bin/sheepr-send.sh" t4 --keys down enter 2>&1); rc=$?
+  is "$rc" '0' 'answering a dialog succeeds'
+  case "$out" in *'sent keys to t4: down enter'*) ok 'it reports the keys it sent' ;;
+    *) fail 'it reports the keys it sent' "got: $out" ;; esac
+
+  if [ -f "$SHEEPR_HOME/tasks/t4/.woke" ]; then
+    fail 'answering a dialog clears the wake suppression' \
+      'the .woke from the answered dialog is still there'
+  else
+    ok 'answering a dialog clears the wake suppression'
+  fi
+
+  rm -rf "$STUB"
+fi
 
 finish

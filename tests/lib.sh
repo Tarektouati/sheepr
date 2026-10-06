@@ -99,6 +99,34 @@ flock_doc() {  # <row-json>...
   }' >"$FAKE_FLOCK_JSON"
 }
 
+# Run a command under a wall-clock bound and print what it printed. There is
+# no `timeout` binary on macOS, so the bound is enforced here. Returns 124 when
+# the command was still running at the bound: a test for a hang must fail, not
+# hang the suite with it.
+run_bounded() {  # <seconds> <command...>
+  local limit=$1; shift
+  local out pid rc waited=0
+  out=$(mktemp "${TMPDIR:-/tmp}/sheepr-bound-XXXXXX") || return 125
+  "$@" >"$out" 2>&1 &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge "$limit" ]; then
+      # The command may have forked; a spinning grandchild left behind would
+      # burn a core for the rest of the session.
+      pkill -9 -P "$pid" 2>/dev/null
+      kill -9 "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      cat "$out"; rm -f "$out"
+      return 124
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$pid"; rc=$?
+  cat "$out"; rm -f "$out"
+  return "$rc"
+}
+
 begin() { printf 'FM_TEST_BEGIN %s\n' "$TEST_NAME"; }
 
 summary() {

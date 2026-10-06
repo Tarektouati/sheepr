@@ -52,8 +52,12 @@ its own worktree, and tell you when there is something to decide.
 ./bin/sheepr-spawn.sh ~/code/myapp fix-login \
     --kind cursor --delivery pr --brief /tmp/brief.md
 
-# watch: silent until something needs you, then one line
+# watch: silent until something needs you, then one line.
+# Also wakes with a report every SHEEPR_REPORT seconds (default 1800, 0 = off)
 ./bin/sheepr-watch.sh
+
+# what is every worker doing?
+./bin/sheepr-report.sh
 
 # answer a question the worker raised
 ./bin/sheepr-send.sh fix-login "Use the second approach." --resolve approach

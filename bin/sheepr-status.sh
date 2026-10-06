@@ -4,6 +4,7 @@
 # Usage:
 #   sheepr-status.sh fold   <task-id>            -> <state>|<key>|<text>
 #   sheepr-status.sh open   <task-id>            -> one open key per line
+#   sheepr-status.sh last   <task-id>            -> <epoch>|<verb>|<text>
 #   sheepr-status.sh append <task-id> <verb> <key> <text>
 #
 # Owns: the status line grammar and the fold that turns an append-only log
@@ -108,6 +109,23 @@ sheepr_status_open_keys() {  # <task-id> -> one open key per line
   ' <"$f"
 }
 
+# The newest line, and the newest progress text, for the fleet report. This is
+# description, never decision: what the worker is doing comes from here, what
+# needs attention comes from the fold.
+#
+# Prints <epoch-of-last-line>|<verb-of-last-line>|<text-of-last-working-line>,
+# or nothing when the log holds no recognised line.
+sheepr_status_last() {  # <task-id>
+  local f
+  f=$(sheepr_status_file "$1")
+  [ -f "$f" ] || return 0
+  awk -F'|' '
+    $1 ~ /^(working|question|blocked|done|failed|resolved)$/ { epoch = $2; verb = $1 }
+    $1 == "working" { text = $4; for (i = 5; i <= NF; i++) text = text "|" $i }
+    END { if (verb != "") printf "%s|%s|%s\n", epoch, verb, text }
+  ' <"$f"
+}
+
 sheepr_status_append() {  # <task-id> <verb> <key> <text>
   local id=$1 verb=$2 key=$3 text=$4 f
   f=$(sheepr_status_file "$id")
@@ -129,6 +147,10 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
       [ $# -ge 1 ] || die "usage: sheepr-status.sh fold <task-id>"
       sheepr_status_fold "$1"
       ;;
+    last)
+      [ $# -ge 1 ] || die "usage: sheepr-status.sh last <task-id>"
+      sheepr_status_last "$1"
+      ;;
     open)
       [ $# -ge 1 ] || die "usage: sheepr-status.sh open <task-id>"
       sheepr_status_open_keys "$1"
@@ -138,7 +160,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
       sheepr_status_append "$1" "$2" "${3:-}" "${4:-}"
       ;;
     *)
-      die "usage: sheepr-status.sh fold|open|append <task-id> ..."
+      die "usage: sheepr-status.sh fold|open|last|append <task-id> ..."
       ;;
   esac
 fi

@@ -36,6 +36,10 @@ Key and value, one per line. Where the task's workspace, pane, worktree, branch,
 **wake** - a reason the supervisor must take a turn.
 Written to `tasks/.wakes` and printed by the watcher.
 
+**report** - the digest of what every worker is doing. `bin/sheepr-report.sh`.
+The watcher wakes with `report:` every `SHEEPR_REPORT` seconds while a task
+runs, and the supervisor turns it into a short update for the captain.
+
 **delivery** - how finished work reaches the captain. One of:
 
 - `pr` - a pull request is opened and its URL is reported.

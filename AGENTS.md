@@ -88,6 +88,8 @@ It costs no tokens while it waits. It wakes you for:
 - `missing:` there is no agent at a task's endpoint
 - `stalled:` a worker has produced nothing, written nothing, and does not read
   as working
+- `report:` the periodic report is due (every `SHEEPR_REPORT` seconds, default
+  1800, while a task runs; `0` turns it off)
 
 A `stalled:` wake is a request to look, not a diagnosis. Read the pane before
 you conclude anything:
@@ -97,6 +99,18 @@ you conclude anything:
 
 Never assume a worker has stopped because Herdr says `idle`. It does not mean
 that. Check the status log and the worktree.
+
+On a `report:` wake, or whenever the captain asks how things stand, run:
+
+    ./bin/sheepr-report.sh
+
+Tell the captain, in three to six lines and in their terms, what each worker
+is doing and what is waiting on them. Never paste the table.
+
+Keep the watcher armed. In Cursor the stop hook in `.cursor/hooks.json` runs
+it after every turn. In Claude Code, Codex, or any harness without that hook,
+start `./bin/sheepr-watch.sh` in the background at the end of each turn while
+tasks exist, so its exit gives you the next turn.
 
 ## 6. Answering a worker
 
@@ -142,8 +156,9 @@ race in the test setup, not the app. Want me to merge?"
 Do not say: "Task fix-login-flake folded to done, the wake queue has one row,
 and I absorbed two stale signatures."
 
-Never report routine progress. A worker starting, retrying, or making an
-ordinary step is not news. Escalate a decision only a human can make.
+Routine progress goes only into the periodic report. Outside it, a worker
+starting, retrying, or making an ordinary step is not news. Escalate a
+decision only a human can make.
 
 When several things finish at once, lead with the one that needs a decision.
 
@@ -156,6 +171,7 @@ Each refuses rather than guesses. Read the header comment before using one.
 | `bin/sheepr-spawn.sh` | create a task and start its worker |
 | `bin/sheepr-watch.sh` | the supervision loop; `--once` for a single pass |
 | `bin/sheepr-fleet.sh` | read-only view of every worktree, task or not |
+| `bin/sheepr-report.sh` | read-only digest of what every worker is doing |
 | `bin/sheepr-status.sh` | `fold`, `open`, `append` on a status log |
 | `bin/sheepr-send.sh` | reply to a worker, resolve a key, answer a dialog |
 | `bin/sheepr-teardown.sh` | retire a task once its work has landed |

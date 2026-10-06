@@ -108,6 +108,15 @@ sheepr_lock_release() {  # <lock-path>
   rm -rf "$1"
 }
 
+# Print the pid holding <lock> and return 0, or return 1 when nobody live
+# holds it. Looks only; never takes or reclaims the lock.
+sheepr_lock_holder() {  # <lock-path>
+  local held
+  held=$(cat "$1/pid" 2>/dev/null || printf '')
+  [ -n "$held" ] && kill -0 "$held" 2>/dev/null || return 1
+  printf '%s' "$held"
+}
+
 sheepr_now() { date +%s; }
 
 sheepr_ensure_home() {

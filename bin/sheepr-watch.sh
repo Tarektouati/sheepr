@@ -2,14 +2,33 @@
 # bin/sheepr-watch.sh - the supervision loop. Burns no tokens.
 #
 # Usage:
-#   sheepr-watch.sh           poll until something is actionable, then exit
-#   sheepr-watch.sh --once    one pass, no sleeping (tests, diagnosis)
-#   sheepr-watch.sh --hook    as default, but print a Cursor followup_message
+#   sheepr-watch.sh                   poll until something is actionable, print
+#                                     it, exit. Cursor runs this as a
+#                                     background shell; finishing wakes it.
+#   sheepr-watch.sh --once            one pass, no sleeping. Exit 0 woke,
+#                                     1 quiet, 3 another watcher owns the fleet
+#   sheepr-watch.sh --hook cursor     Cursor stop hook: one pass, never parks.
+#                                     `--hook` alone means this.
+#   sheepr-watch.sh --hook claude     Claude Code Stop hook with asyncRewake:
+#                                     poll in the background, exit 2 to wake
+#   sheepr-watch.sh --hook codex      Codex async Stop hook: start a detached
+#                                     --wake-pane watcher and return at once
+#   sheepr-watch.sh --wake-pane <id>  poll; deliver the wake into that Herdr
+#                                     pane once its agent is idle
 #
 # Owns: deciding whether the fleet needs the supervisor's attention, and the
 # wake queue.
 #
+# One watcher owns the fleet: every mode that writes task state holds
+# tasks/.watch.lock, and every other mode leaves without touching anything.
+#
+# A wake is delivered first and recorded (.woke, tasks/.wakes) second. Dying
+# between the two repeats a wake on the next pass; the reverse order would
+# record a wake nobody received and absorb it forever.
+#
 # Refuses:
+#   - to type into a Herdr pane that holds no agent. Text submitted to a bare
+#     shell runs as a command. The wake stays unrecorded for the next session.
 #   - to treat a herdr `idle` as proof that a worker has stopped. Only
 #     `working` is positive evidence of life; everything else must be
 #     corroborated by the status log or by file writes in the worktree.
@@ -37,14 +56,19 @@ SHEEPR_POLL=${SHEEPR_POLL:-15}
 SHEEPR_STALL=${SHEEPR_STALL:-240}
 SHEEPR_SCAN_MAXDEPTH=${SHEEPR_SCAN_MAXDEPTH:-6}
 SHEEPR_SCAN_TIMEOUT=${SHEEPR_SCAN_TIMEOUT:-10}
-# How long the turn-end hook may park before giving the turn back. A hook that
-# parks forever on an idle fleet makes the supervisor look hung.
-SHEEPR_HOOK_MAX=${SHEEPR_HOOK_MAX:-3600}
+# How long a background watcher started by a turn-end hook may wait. It must
+# stay below the hook timeout in .claude/settings.json (28800), or the harness
+# can kill it between delivering a wake and recording it.
+SHEEPR_HOOK_MAX=${SHEEPR_HOOK_MAX:-28000}
 
 TRIAGE="$SHEEPR_TASKS/.watch-triage.log"
 WATCH_LOCK="$SHEEPR_TASKS/.watch.lock"
+PANE_LOG="$SHEEPR_TASKS/.watch-pane.log"
+
+REARM_MESSAGE="sheepr: no watcher is running. Start ./bin/sheepr-watch.sh as a background command, then end your turn."
 
 MODE=loop
+PANE=''
 
 triage() {  # <task-id> <verdict>
   mkdir -p "$(dirname "$TRIAGE")"
@@ -178,27 +202,71 @@ inspect_task() {  # <task-id>
 
 # --- one pass ---------------------------------------------------------------
 
-# Prints the reason and returns 0 when something is actionable.
-pass_once() {
-  local id out sig reason last dir
+# Print "<task-id>\t<signature>\t<reason>" for the first wake not yet
+# delivered, and return 0. Records nothing: see commit_wake.
+find_wake() {
+  local id out sig last
   while read -r id; do
     [ -n "$id" ] || continue
     out=$(inspect_task "$id") || continue
     sig=${out%%$'\t'*}
-    reason=${out#*$'\t'}
-    dir=$(sheepr_task_dir "$id")
-    last=$(cat "$dir/.woke" 2>/dev/null || printf '')
+    last=$(cat "$(sheepr_task_dir "$id")/.woke" 2>/dev/null || printf '')
     if [ "$sig" = "$last" ]; then
       triage "$id" "absorbed (already woke for: $sig)"
       continue
     fi
-    printf '%s' "$sig" >"$dir/.woke"
-    mkdir -p "$(dirname "$SHEEPR_WAKES")"
-    printf '%s|%s|%s\n' "$(sheepr_now)" "$id" "$reason" >>"$SHEEPR_WAKES"
-    printf '%s\n' "$reason"
+    printf '%s\t%s' "$id" "$out"
     return 0
   done < <(sheepr_task_ids)
   return 1
+}
+
+# Record a delivered wake, so it is not delivered again.
+commit_wake() {  # <task-id> <signature> <reason>
+  printf '%s' "$2" >"$(sheepr_task_dir "$1")/.woke"
+  mkdir -p "$(dirname "$SHEEPR_WAKES")"
+  printf '%s|%s|%s\n' "$(sheepr_now)" "$1" "$3" >>"$SHEEPR_WAKES"
+}
+
+# Split find_wake's output into WAKE_ID, WAKE_SIG and WAKE_REASON.
+split_wake() {  # <find_wake-output>
+  WAKE_ID=${1%%$'\t'*}
+  local rest=${1#*$'\t'}
+  WAKE_SIG=${rest%%$'\t'*}
+  WAKE_REASON=${rest#*$'\t'}
+}
+
+# Prints the reason, then records it, and returns 0 when something is
+# actionable.
+pass_once() {
+  local found
+  found=$(find_wake) || return 1
+  split_wake "$found"
+  printf '%s\n' "$WAKE_REASON"
+  commit_wake "$WAKE_ID" "$WAKE_SIG" "$WAKE_REASON"
+  return 0
+}
+
+# Submit a wake into the supervisor's Herdr pane.
+# 0 delivered, 1 not now (busy, at a dialog, or the submit failed),
+# 2 nobody to deliver to: the pane is gone or holds no agent.
+deliver_to_pane() {  # <pane-id> <task-id> <reason>
+  local st
+  sheepr_pane_agent "$1" >/dev/null || return 2
+  st=$(sheepr_agent_state "$1")
+  case "$st" in
+    idle|done) ;;
+    missing) return 2 ;;
+    *) return 1 ;;
+  esac
+  sheepr_agent_prompt_verified "$1" "sheepr wake: $3" ''
+  case $? in
+    0) return 0 ;;
+    # Submitted and visible in the composer, but no turn was observed.
+    # Retrying would type it a second time onto the first copy.
+    4) triage "$2" "wake submitted to $1 but no turn observed"; return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # --- main -------------------------------------------------------------------
@@ -206,31 +274,65 @@ pass_once() {
 # Only when executed. Tests source this file and drive inspect_task directly.
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  usage="usage: sheepr-watch.sh [--once | --hook [cursor|claude|codex] | --wake-pane <pane-id>]"
   case "${1:-}" in
     --once) MODE=once ;;
-    --hook) MODE=hook ;;
+    --hook)
+      case "${2:-cursor}" in
+        cursor|claude|codex) MODE="hook-${2:-cursor}" ;;
+        *) die "$usage" ;;
+      esac
+      ;;
+    --wake-pane)
+      [ -n "${2:-}" ] || die "--wake-pane needs a pane id"
+      MODE=wake-pane; PANE=$2
+      ;;
     '') MODE=loop ;;
-    *) die "usage: sheepr-watch.sh [--once|--hook]" ;;
+    *) die "$usage" ;;
   esac
 
-  sheepr_ensure_home
-  command -v herdr >/dev/null 2>&1 || die "herdr not found"
-  command -v jq >/dev/null 2>&1 || die "jq not found"
-
-  if [ "$MODE" = once ]; then
-    pass_once
-    exit $?
+  # Cursor imports Claude Code hooks from .claude/settings.json, but not
+  # asyncRewake: it would run this one in the foreground and park the
+  # session. Cursor's own stop hook covers it.
+  if [ "$MODE" = hook-claude ] && [ -n "${CURSOR_VERSION:-}" ]; then
+    exit 0
   fi
+
+  sheepr_ensure_home
 
   # An empty fleet has nothing to supervise. Give the turn straight back
   # rather than parking, or every turn on an idle repo looks hung.
-  if [ -z "$(sheepr_task_ids)" ]; then
+  if [ "$MODE" != once ] && [ -z "$(sheepr_task_ids)" ]; then
+    exit 0
+  fi
+
+  command -v herdr >/dev/null 2>&1 || die "herdr not found"
+  command -v jq >/dev/null 2>&1 || die "jq not found"
+
+  if [ "$MODE" = hook-codex ]; then
+    # Codex's Stop rejects plain text on stdout, and an async hook cannot
+    # start a turn, so the work is handed to a detached watcher that delivers
+    # through Herdr.
+    sheepr_lock_holder "$WATCH_LOCK" >/dev/null && exit 0
+    if [ -z "${HERDR_PANE_ID:-}" ]; then
+      printf '{"systemMessage": %s}\n' \
+        "$(printf 'sheepr: HERDR_PANE_ID is not set, so no watcher was started and no wake can reach this session. Run ./bin/sheepr-watch.sh --once each turn.' | jq -Rs .)"
+      exit 0
+    fi
+    nohup bash "$SHEEPR_ROOT/bin/sheepr-watch.sh" --wake-pane "$HERDR_PANE_ID" \
+      </dev/null >>"$PANE_LOG" 2>&1 &
     exit 0
   fi
 
   if ! sheepr_lock_acquire "$WATCH_LOCK"; then
-    # Another watcher owns the fleet. Say nothing and leave.
-    exit 0
+    holder=$(sheepr_lock_holder "$WATCH_LOCK") || holder=unknown
+    case "$MODE" in
+      once) printf 'watching: a watcher already owns the fleet (pid %s)\n' "$holder"; exit 3 ;;
+      # Under Cursor this line is the completion follow-up; it tells the
+      # supervisor it is covered and must not start another.
+      loop) printf 'watching: a watcher already owns the fleet (pid %s)\n' "$holder"; exit 0 ;;
+      *) exit 0 ;;
+    esac
   fi
   # The lock is released on EXIT only. A handler that released it on INT or
   # TERM did not stop the loop: the watcher carried on polling with no lock,
@@ -239,26 +341,62 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   trap 'sheepr_lock_release "$WATCH_LOCK"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  [ "$MODE" = wake-pane ] && printf '%s' "$PANE" >"$WATCH_LOCK/pane"
+
+  if [ "$MODE" = once ]; then
+    pass_once
+    exit $?
+  fi
+
+  if [ "$MODE" = hook-cursor ]; then
+    # Cursor hooks only run in the foreground, so this one never parks: one
+    # pass, then give the turn back. Cursor ignores exit code 2; a
+    # followup_message on stdout is the only channel that reaches the session.
+    if found=$(find_wake); then
+      split_wake "$found"
+      printf '{"followup_message": %s}\n' "$(printf '%s' "$WAKE_REASON" | jq -Rs .)"
+      commit_wake "$WAKE_ID" "$WAKE_SIG" "$WAKE_REASON"
+    else
+      printf '{"followup_message": %s}\n' "$(printf '%s' "$REARM_MESSAGE" | jq -Rs .)"
+    fi
+    exit 0
+  fi
 
   started=$(sheepr_now)
   while :; do
-    if reason=$(pass_once); then
-      if [ "$MODE" = hook ]; then
-        # Cursor ignores exit code 2; a followup_message on stdout is the only
-        # channel that reaches the session.
-        printf '{"followup_message": %s}\n' "$(printf '%s' "$reason" | jq -Rs .)"
-      else
-        printf '%s\n' "$reason"
-      fi
-      exit 0
+    if found=$(find_wake); then
+      split_wake "$found"
+      case "$MODE" in
+        loop)
+          printf '%s\n' "$WAKE_REASON"
+          commit_wake "$WAKE_ID" "$WAKE_SIG" "$WAKE_REASON"
+          exit 0
+          ;;
+        hook-claude)
+          # asyncRewake: exit 2 wakes Claude, and stderr is what it reads.
+          printf '%s\n' "$WAKE_REASON" >&2
+          commit_wake "$WAKE_ID" "$WAKE_SIG" "$WAKE_REASON"
+          exit 2
+          ;;
+        wake-pane)
+          deliver_to_pane "$PANE" "$WAKE_ID" "$WAKE_REASON"
+          case $? in
+            0) commit_wake "$WAKE_ID" "$WAKE_SIG" "$WAKE_REASON"; exit 0 ;;
+            2)
+              triage "$WAKE_ID" "no agent in supervisor pane $PANE; wake left unrecorded"
+              exit 0
+              ;;
+          esac
+          ;;
+      esac
     fi
     # Every task has gone quiet for good (all torn down, or all absorbed and
     # terminal). Nothing further can arrive from a fleet with no tasks.
     if [ -z "$(sheepr_task_ids)" ]; then
       exit 0
     fi
-    if [ "$MODE" = hook ] && [ $(( $(sheepr_now) - started )) -ge "$SHEEPR_HOOK_MAX" ]; then
-      # Hand the turn back. The next turn re-arms the hook.
+    if [ "$MODE" != loop ] && [ $(( $(sheepr_now) - started )) -ge "$SHEEPR_HOOK_MAX" ]; then
+      # Give up quietly. The next turn end re-arms the hook.
       exit 0
     fi
     sleep "$SHEEPR_POLL"

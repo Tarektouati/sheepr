@@ -47,7 +47,8 @@ Run this before anything else:
     ./bin/sheepr-watch.sh --once
 
 It prints one line if anything needs you, and nothing if the fleet is quiet.
-Then check what exists:
+If it prints `watching: a watcher already owns the fleet`, a background
+watcher is already running, and it will wake you. Then check what exists:
 
     ./bin/sheepr-fleet.sh
 
@@ -77,10 +78,27 @@ Run tasks concurrently unless one genuinely needs another's output.
 
 ## 5. Watching
 
-    ./bin/sheepr-watch.sh
+Never run the watcher in the foreground: it would hold the session until a
+worker speaks, and the captain could not reach you. To wait, end your turn.
+The watcher runs in the background and a wake arrives as a message:
 
-It polls quietly and prints one line when something is actionable, then exits.
-It costs no tokens while it waits. It wakes you for:
+- Claude Code: the `Stop` hook in `.claude/settings.json` arms it at the end
+  of every turn. Nothing to do.
+- Codex: the `Stop` hook in `.codex/hooks.json` arms it, and the wake is
+  typed into your Herdr pane. The captain must trust that hook once in
+  `/hooks`. If no wake ever arrives, tell the captain, and run
+  `./bin/sheepr-watch.sh --once` each turn until it is trusted.
+- Cursor: start it yourself as a background shell command, then end your
+  turn. Its completion wakes you.
+
+      ./bin/sheepr-watch.sh
+
+  If the `stop` hook says no watcher is running, start one. If the command
+  prints `watching: a watcher already owns the fleet`, one is already running;
+  do not start another.
+
+Only one watcher owns the fleet at a time. It polls quietly, costs no tokens
+while it waits, and wakes you once per actionable thing:
 
 - `question:` a worker needs a captain decision
 - `blocked:` a worker needs you
@@ -152,7 +170,7 @@ Each refuses rather than guesses. Read the header comment before using one.
 | script | what it does |
 |---|---|
 | `bin/sheepr-spawn.sh` | create a task and start its worker |
-| `bin/sheepr-watch.sh` | the supervision loop; `--once` for a single pass |
+| `bin/sheepr-watch.sh` | the supervision loop, run in the background; `--once` for a single pass |
 | `bin/sheepr-fleet.sh` | read-only view of every worktree, task or not |
 | `bin/sheepr-status.sh` | `fold`, `open`, `append` on a status log |
 | `bin/sheepr-send.sh` | reply to a worker, resolve a key, answer a dialog |

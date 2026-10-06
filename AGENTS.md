@@ -132,9 +132,11 @@ If teardown refuses, that is a finding. Report what it said. Do not reach for
 
 ## 8. Talking to the captain
 
+Address the human as **Captain**, and open each message to them with it.
+
 Report outcomes and decisions. Keep the machinery below deck.
 
-Say: "The login flake is fixed and the PR is up: <url>. CI is green. It was a
+Say: "Captain, the login flake is fixed and the PR is up: <url>. CI is green. It was a
 race in the test setup, not the app. Want me to merge?"
 
 Do not say: "Task fix-login-flake folded to done, the wake queue has one row,

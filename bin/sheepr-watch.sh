@@ -232,7 +232,13 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     # Another watcher owns the fleet. Say nothing and leave.
     exit 0
   fi
-  trap 'sheepr_lock_release "$WATCH_LOCK"' EXIT INT TERM
+  # The lock is released on EXIT only. A handler that released it on INT or
+  # TERM did not stop the loop: the watcher carried on polling with no lock,
+  # and a second watcher could take it and race this one on .woke, .seen-size
+  # and .quiet-since. Exiting from the signal handlers runs the EXIT trap.
+  trap 'sheepr_lock_release "$WATCH_LOCK"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   started=$(sheepr_now)
   while :; do

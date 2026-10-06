@@ -39,9 +39,13 @@ else
 fi
 
 RESOLVE=''
+# A flag must carry its value. `shift 2` with one argument left shifts nothing
+# and reports failure, so the loop would spin on the same argument forever.
 while [ $# -gt 0 ] && [ "$KEYS_MODE" = 0 ]; do
   case "$1" in
-    --resolve) RESOLVE=${2:-}; shift 2 ;;
+    --resolve)
+      [ $# -ge 2 ] || die "--resolve needs a value"
+      RESOLVE=$2; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -61,6 +65,11 @@ NAME=$(sheepr_meta_get "$ID" name) || NAME="sheepr-$ID"
 if [ "$KEYS_MODE" = 1 ]; then
   sheepr_agent_send_keys "$NAME" "$@" || die "could not send keys to $ID"
   printf 'sent keys to %s: %s\n' "$ID" "$*"
+  # The same reason as at the foot of this file, and it bites harder here: the
+  # worker's next dialog carries the same wake signature as the one just
+  # answered, so a stale .woke absorbs it and the supervisor is never told the
+  # worker is parked again.
+  rm -f "$(sheepr_task_dir "$ID")/.woke"
   exit 0
 fi
 
@@ -77,7 +86,7 @@ fi
 
 # --- deliver ----------------------------------------------------------------
 
-sheepr_agent_prompt_verified "$NAME" "$TEXT"
+sheepr_agent_prompt_verified "$NAME" "$TEXT" "$(sheepr_status_file "$ID")"
 case $? in
   0) printf 'delivered to %s\n' "$ID" ;;
   3) die "worker $ID is parked at a dialog; use --keys to answer it" ;;

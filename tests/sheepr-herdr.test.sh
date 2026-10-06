@@ -70,4 +70,52 @@ for bad in 'a b' 'a;rm -rf /' '$(id)' '--sandbox' '-p' '../other'; do
     *) fail 'the refusal names the variable' "got: $out" ;; esac
 done
 
+# --- delivery is proved by the status log, never by `done` ------------------
+#
+# The regression that matters: a worker that had already ended its turn reads
+# `done` before the prompt is sent. When the Enter is swallowed the text sits
+# unsent in the composer and the state never moves, so `done` was reported to
+# the supervisor as "delivered" for a reply the worker never saw.
+#
+# herdr is stubbed by overriding the three calls the function makes. The
+# settle budget is one second, so the whole section costs a couple of seconds.
+
+STUB_STATE=done
+STUB_READS=no          # yes: the worker picks the prompt up and writes a line
+STATUS="$SHEEPR_HOME/tasks/t-verify/status"
+mkdir -p "$(dirname "$STATUS")"
+: >"$STATUS"
+
+# shellcheck disable=SC2317
+sheepr_agent_state() { printf '%s' "$STUB_STATE"; }
+# shellcheck disable=SC2317
+sheepr_agent_prompt() {
+  [ "$STUB_READS" = yes ] && printf 'working|1||picked up the reply\n' >>"$STATUS"
+  return 0
+}
+# shellcheck disable=SC2317
+sheepr_agent_send_keys() { return 0; }
+
+verify() { sheepr_agent_prompt_verified sheepr-t-verify 'a reply' "$STATUS" 1; }
+
+verify; is "$?" '4' 'a done agent whose status log never moved is not delivery'
+
+STUB_READS=yes
+verify; is "$?" '0' 'a status log that grew is proof the prompt landed'
+
+STUB_READS=no
+STUB_STATE=working
+verify; is "$?" '0' 'an agent that started working needs no further proof'
+
+STUB_STATE=blocked
+verify; is "$?" '3' 'an agent parked at a dialog is still reported as parked'
+
+STUB_STATE=idle
+verify; is "$?" '4' 'an idle agent with a silent log is still not delivery'
+
+# The status log is the worker's, so a line written by anyone counts as the
+# worker having moved. Nothing else in sheepr writes to it while a prompt is
+# in flight, which is why the size is taken immediately before submitting.
+is "$(grep -c '' "$STATUS")" '1' 'only the read prompt appended to the log'
+
 finish

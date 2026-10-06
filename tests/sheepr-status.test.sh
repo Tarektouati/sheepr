@@ -104,6 +104,44 @@ failed|120||cannot reproduce
 EOF
 is "$(fold t-failed)" 'failed||cannot reproduce' 'failed wins over an open question'
 
+# --- but a terminal state is not sticky -------------------------------------
+#
+# The regression that matters: a worker that reports failed and then asks a
+# question is asking the supervisor for a way forward. A fold that kept
+# printing `failed` swallowed the question entirely.
+
+write_status t-failed-then-q <<'EOF'
+working|100||started
+failed|110||tests need DB creds
+question|120|schema|keep or drop the column?
+EOF
+is "$(fold t-failed-then-q)" 'question|schema|keep or drop the column?' \
+  'a question after a failed run reaches the supervisor'
+
+write_status t-done-then-blocked <<'EOF'
+done|100||https://example.com/pr/1
+blocked|110||the branch will not push
+EOF
+is "$(fold t-done-then-blocked)" 'blocked|default|the branch will not push' \
+  'a blocker after done reaches the supervisor'
+
+write_status t-done-then-work <<'EOF'
+done|100||https://example.com/pr/1
+working|110||review asked for one more thing
+EOF
+is "$(fold t-done-then-work)" 'working||' \
+  'progress after done means the worker is working again'
+
+write_status t-done-again <<'EOF'
+failed|100||tests need DB creds
+question|110|schema|keep or drop the column?
+resolved|120|schema|drop it
+working|130||dropping it
+done|140||https://example.com/pr/2
+EOF
+is "$(fold t-done-again)" 'done||https://example.com/pr/2' \
+  'a terminal state still wins when it is the last thing the worker said'
+
 # --- robustness -------------------------------------------------------------
 
 write_status t-prose <<'EOF'

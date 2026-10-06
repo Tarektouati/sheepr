@@ -42,11 +42,13 @@ REPO_ARG=$1; shift
 ID=$1; shift
 
 KIND=''; DELIVERY=''; BRIEF=''
+# A flag must carry its value. `shift 2` with one argument left shifts nothing
+# and reports failure, so the loop would spin on the same argument forever.
 while [ $# -gt 0 ]; do
   case "$1" in
-    --kind) KIND=${2:-}; shift 2 ;;
-    --delivery) DELIVERY=${2:-}; shift 2 ;;
-    --brief) BRIEF=${2:-}; shift 2 ;;
+    --kind) [ $# -ge 2 ] || die "--kind needs a value"; KIND=$2; shift 2 ;;
+    --delivery) [ $# -ge 2 ] || die "--delivery needs a value"; DELIVERY=$2; shift 2 ;;
+    --brief) [ $# -ge 2 ] || die "--brief needs a value"; BRIEF=$2; shift 2 ;;
     -h|--help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -209,7 +211,7 @@ if ! sheepr_agent_start "$NAME" "$KIND" "$PANE" "$TASK_DIR"; then
 fi
 
 DOORBELL='Read ./brief.md and follow it. Do not ask me anything; use the status log.'
-sheepr_agent_prompt_verified "$NAME" "$DOORBELL"
+sheepr_agent_prompt_verified "$NAME" "$DOORBELL" "$STATUS"
 case $? in
   0) ;;
   3) warn "worker is parked at a dialog; the brief was not delivered" ; exit 1 ;;

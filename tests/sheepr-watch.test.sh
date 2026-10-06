@@ -153,4 +153,55 @@ is "$rc5" '1' 'a task with nothing open and a working agent is silent'
 rm -rf "$ISOLATED"
 SHEEPR_HOME=$OLD_HOME
 
+# --- TERM stops the watcher, and the lock goes with it ----------------------
+#
+# The loop only exists in a subprocess, so this is the one test that runs the
+# script rather than a function. herdr is stubbed on PATH: it always answers
+# `working`, so the fleet below is never actionable and the loop keeps polling
+# until it is signalled.
+
+if ! command -v jq >/dev/null 2>&1; then
+  skip 'jq is not installed, so the watch loop cannot start'
+else
+  STUB=$(mktemp -d "${TMPDIR:-/tmp}/sheepr-stub-XXXXXX")
+  cat >"$STUB/herdr" <<'STUB_EOF'
+#!/bin/sh
+printf '{"result":{"agent":{"agent_status":"working"}}}\n'
+STUB_EOF
+  chmod +x "$STUB/herdr"
+
+  TERM_HOME=$(mktemp -d "${TMPDIR:-/tmp}/sheepr-term-XXXXXX")
+  mkdir -p "$TERM_HOME/tasks/t-term"
+  printf 'name=sheepr-t-term\nlabel=sheepr-t-term\n' >"$TERM_HOME/tasks/t-term/meta"
+  : >"$TERM_HOME/tasks/t-term/status"
+  LOCK="$TERM_HOME/tasks/.watch.lock"
+
+  PATH="$STUB:$PATH" HERDR_ENV=1 SHEEPR_HOME="$TERM_HOME" SHEEPR_POLL=1 \
+    bash "$SHEEPR_ROOT/bin/sheepr-watch.sh" >/dev/null 2>&1 &
+  wpid=$!
+
+  waited=0
+  while [ ! -d "$LOCK" ] && [ "$waited" -lt 10 ]; do sleep 1; waited=$((waited + 1)); done
+  if [ -d "$LOCK" ]; then ok 'the watcher holds the lock while it polls'
+  else fail 'the watcher holds the lock while it polls' 'no lock appeared in ten seconds'; fi
+
+  kill -TERM "$wpid" 2>/dev/null
+  waited=0
+  while kill -0 "$wpid" 2>/dev/null && [ "$waited" -lt 10 ]; do sleep 1; waited=$((waited + 1)); done
+
+  if kill -0 "$wpid" 2>/dev/null; then
+    fail 'a watcher sent TERM exits' 'it was still polling ten seconds later'
+    kill -9 "$wpid" 2>/dev/null
+    wait "$wpid" 2>/dev/null
+  else
+    wait "$wpid"
+    is "$?" '143' 'a watcher sent TERM exits, and exits as terminated'
+  fi
+
+  if [ -d "$LOCK" ]; then fail 'the lock is gone once the watcher has stopped' 'the lock is still there'
+  else ok 'the lock is gone once the watcher has stopped'; fi
+
+  rm -rf "$STUB" "$TERM_HOME"
+fi
+
 finish

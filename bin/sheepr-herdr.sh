@@ -293,10 +293,19 @@ sheepr_agent_send_keys() {  # <name> <key...>
 # submit whatever is sitting in the composer. Never retype the prompt, which
 # would concatenate it with the pending copy.
 #
-# Exit: 0 the agent started working, 3 parked at a dialog, 1 could not submit,
-#       4 submitted but never observed starting.
-sheepr_agent_prompt_verified() {  # <name> <text> [settle-seconds]
-  local name=$1 text=$2 budget=${3:-20} rc st i
+# <status-file> is the task's status log, and it is the only evidence that
+# separates a worker which read the prompt and finished quickly from one whose
+# Enter was swallowed. Both read `done`: a worker that had already ended its
+# turn is `done` before the prompt is even sent.
+#
+# Exit: 0 the agent started working, or its status log grew while the prompt
+#         was in flight, 3 parked at a dialog, 1 could not submit,
+#       4 submitted, but nothing observable followed.
+sheepr_agent_prompt_verified() {  # <name> <text> <status-file> [settle-seconds]
+  local name=$1 text=$2 status=${3:-} budget=${4:-20} rc st i before after
+
+  before=0
+  [ -n "$status" ] && [ -f "$status" ] && before=$(wc -c <"$status" | tr -d ' ')
 
   sheepr_agent_prompt "$name" "$text"; rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
@@ -315,12 +324,18 @@ sheepr_agent_prompt_verified() {  # <name> <text> [settle-seconds]
     sleep 1
   done
 
-  # A very short task can finish inside the budget; treat a written status log
-  # or a terminal state as proof the prompt did land.
   st=$(sheepr_agent_state "$name")
   case "$st" in
-    working|done) return 0 ;;
+    working) return 0 ;;
     blocked) return 3 ;;
   esac
+
+  # Every remaining state, `done` included, is compatible with a prompt still
+  # sitting unsent in the composer. A very short task can genuinely finish
+  # inside the budget, so ask the status log: a worker that read the prompt
+  # wrote something, and one that never got it wrote nothing.
+  after=0
+  [ -n "$status" ] && [ -f "$status" ] && after=$(wc -c <"$status" | tr -d ' ')
+  [ "${after:-0}" -gt "${before:-0}" ] && return 0
   return 4
 }

@@ -27,6 +27,13 @@
 # Verb only the supervisor writes:
 #   resolved  closes the question or blocker with the matching key
 #
+# The fold reads the whole log in order, and reports, in this priority:
+#   1. a done or failed with no working, question or blocked after it. A
+#      terminal state is not sticky: a worker that speaks again was not
+#      finished, and its done or failed is cleared by what it said next.
+#   2. otherwise the oldest question or blocker still open.
+#   3. otherwise working, or empty when the log holds nothing recognisable.
+#
 # An unrecognised line is ignored rather than fatal: workers occasionally write
 # prose into the log, and losing the fold over that would be worse than
 # skipping it.
@@ -51,6 +58,13 @@ _sheepr_fold_awk() {
       text = $4
       # A text field containing pipes is rejoined so nothing is lost.
       for (i = 5; i <= NF; i++) text = text "|" $i
+
+      # A worker that speaks again was not finished after all. Without this,
+      # a question asked after a failed run stayed buried under the failure
+      # and never reached the supervisor.
+      if (verb == "question" || verb == "blocked" || verb == "working") {
+        term_verb = ""; term_text = ""
+      }
 
       if (verb == "done" || verb == "failed") {
         term_verb = verb; term_text = text; seen = 1

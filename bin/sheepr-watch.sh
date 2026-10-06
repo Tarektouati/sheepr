@@ -25,6 +25,12 @@
 #      status log grown, or has any file in the worktree changed inside the
 #      quiet window? If neither, and the window is older than SHEEPR_STALL,
 #      wake as stalled.
+#
+# After the ladder, when no task is actionable: the periodic report. Every
+# SHEEPR_REPORT seconds (default 1800, 0 turns it off), while at least one
+# task is still running, wake with `report:` so the supervisor can tell the
+# captain what the workers are doing. An actionable wake always comes first,
+# and a fleet with nothing running gets no reports.
 
 set -uo pipefail
 
@@ -40,9 +46,14 @@ SHEEPR_SCAN_TIMEOUT=${SHEEPR_SCAN_TIMEOUT:-10}
 # How long the turn-end hook may park before giving the turn back. A hook that
 # parks forever on an idle fleet makes the supervisor look hung.
 SHEEPR_HOOK_MAX=${SHEEPR_HOOK_MAX:-3600}
+# Seconds between periodic report wakes. 0 turns them off.
+SHEEPR_REPORT=${SHEEPR_REPORT:-1800}
 
 TRIAGE="$SHEEPR_TASKS/.watch-triage.log"
 WATCH_LOCK="$SHEEPR_TASKS/.watch.lock"
+# Holds the epoch of the last report wake. An epoch in the file, not an mtime:
+# `stat` differs between macOS and GNU, and a wrong guess here is silent.
+REPORT_MARK="$SHEEPR_TASKS/.last-report"
 
 MODE=loop
 
@@ -198,7 +209,40 @@ pass_once() {
     printf '%s\n' "$reason"
     return 0
   done < <(sheepr_task_ids)
-  return 1
+  report_wake
+}
+
+# --- periodic report --------------------------------------------------------
+
+# Print a report wake and return 0 when one is due; return 1 otherwise.
+#
+# The clock starts at the first pass that sees a running task, not at zero:
+# a report straight after a spawn would say nothing the captain does not know.
+report_wake() {
+  [[ $SHEEPR_REPORT =~ ^[0-9]+$ ]] || die "SHEEPR_REPORT must be a number of seconds, got '$SHEEPR_REPORT'"
+  [ "$SHEEPR_REPORT" -gt 0 ] || return 1
+
+  local id state running=0 now last
+  while read -r id; do
+    [ -n "$id" ] || continue
+    state=$(sheepr_status_fold "$id")
+    case "${state%%|*}" in working|empty) running=$((running + 1)) ;; esac
+  done < <(sheepr_task_ids)
+  [ "$running" -gt 0 ] || return 1
+
+  now=$(sheepr_now)
+  last=$(cat "$REPORT_MARK" 2>/dev/null || printf '')
+  if ! [[ $last =~ ^[0-9]+$ ]]; then
+    printf '%s' "$now" >"$REPORT_MARK"
+    return 1
+  fi
+  [ $((now - last)) -ge "$SHEEPR_REPORT" ] || return 1
+
+  printf '%s' "$now" >"$REPORT_MARK"
+  local reason="report: $running task(s) running - run ./bin/sheepr-report.sh"
+  printf '%s|%s|%s\n' "$now" '-' "$reason" >>"$SHEEPR_WAKES"
+  printf '%s\n' "$reason"
+  return 0
 }
 
 # --- main -------------------------------------------------------------------

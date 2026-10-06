@@ -153,6 +153,59 @@ is "$rc5" '1' 'a task with nothing open and a working agent is silent'
 rm -rf "$ISOLATED"
 SHEEPR_HOME=$OLD_HOME
 
+# --- the periodic report ----------------------------------------------------
+
+ISOLATED=$(mktemp -d "${TMPDIR:-/tmp}/sheepr-iso-XXXXXX")
+OLD_HOME=$SHEEPR_HOME
+SHEEPR_HOME=$ISOLATED; SHEEPR_TASKS="$ISOLATED/tasks"; SHEEPR_WAKES="$SHEEPR_TASKS/.wakes"
+TRIAGE="$SHEEPR_TASKS/.watch-triage.log"; REPORT_MARK="$SHEEPR_TASKS/.last-report"
+mkdir -p "$SHEEPR_TASKS"
+STUB_STATE=working
+d=$(mktask busy)
+printf 'working|1||on it\n' >"$d/status"
+SHEEPR_REPORT=60
+
+out=$(pass_once); rc=$?
+is "$rc" '1' 'the first pass starts the report clock rather than reporting'
+[ -f "$REPORT_MARK" ] && ok 'the report clock is recorded' || fail 'the report clock is recorded'
+
+out=$(pass_once); rc=$?
+is "$rc" '1' 'no report before the interval has passed'
+
+printf '%s' "$(( $(sheepr_now) - 61 ))" >"$REPORT_MARK"
+out=$(pass_once); rc=$?
+is "$rc" '0' 'a report wakes once the interval has passed'
+is "$out" 'report: 1 task(s) running - run ./bin/sheepr-report.sh' 'the report wake counts running tasks'
+grep -q '|-|report: ' "$SHEEPR_WAKES" && ok 'the report reached the wake queue' \
+  || fail 'the report reached the wake queue'
+
+out=$(pass_once); rc=$?
+is "$rc" '1' 'a report resets the clock'
+
+printf '%s' "$(( $(sheepr_now) - 61 ))" >"$REPORT_MARK"
+SHEEPR_REPORT=0
+out=$(pass_once); rc=$?
+is "$rc" '1' 'SHEEPR_REPORT=0 turns reports off'
+SHEEPR_REPORT=60
+
+q=$(mktask asker)
+printf 'question|2|k|which?\n' >"$q/status"
+out=$(pass_once); rc=$?
+is "$out" 'question: asker - k: which?' 'an actionable wake comes before a due report'
+rm -rf "$q"
+
+printf 'done|3||shipped\n' >>"$d/status"
+printf '%s' "$(( $(sheepr_now) - 61 ))" >"$REPORT_MARK"
+pass_once >/dev/null   # the done itself wakes once
+out=$(pass_once); rc=$?
+is "$rc" '1' 'a fleet with nothing running gets no report'
+
+out=$(SHEEPR_REPORT=soon report_wake 2>&1); rc=$?
+is "$rc" '1' 'a non-numeric SHEEPR_REPORT is refused'
+
+rm -rf "$ISOLATED"
+SHEEPR_HOME=$OLD_HOME
+
 # --- TERM stops the watcher, and the lock goes with it ----------------------
 #
 # The loop only exists in a subprocess, so this is the one test that runs the

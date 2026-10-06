@@ -167,6 +167,23 @@ question|130|k|asked again
 EOF
 is "$(fold t-reopen)" 'question|k|asked again' 'a reopened key surfaces again'
 
+# --- last: what the report describes ---------------------------------------
+
+write_status t-last <<'EOF'
+working|100||first step
+working|110||second | step
+question|120|k|which one?
+not a status line
+EOF
+is "$(sheepr_status_last t-last)" '120|question|second | step' \
+  'last gives the newest line epoch and verb, and the newest progress text'
+
+write_status t-last-none <<'EOF'
+done|100||shipped
+EOF
+is "$(sheepr_status_last t-last-none)" '100|done|' 'last has empty progress when there was no working line'
+is "$(sheepr_status_last t-no-such-task)" '' 'last prints nothing for a task with no log'
+
 # --- append round trip ------------------------------------------------------
 
 sheepr_status_append t-append working '' 'hello there'

@@ -37,4 +37,15 @@ is "$rc" '1' 'a complete line is still refused when the brief file is missing'
 case "$out" in *'brief file not found'*) ok 'and it is refused for the brief, not for the parse' ;;
   *) fail 'and it is refused for the brief, not for the parse' "got: $out" ;; esac
 
+# --- report delivery makes a scout ------------------------------------------
+
+out=$(run_bounded 5 spawn "$SHEEPR_ROOT" t1 --kind cursor --delivery report --brief /nonexistent/brief.md)
+case "$out" in *'brief file not found'*) ok '--delivery report passes the delivery check' ;;
+  *) fail '--delivery report passes the delivery check' "got: $out" ;; esac
+
+out=$(run_bounded 5 spawn "$SHEEPR_ROOT" t1 --kind cursor --delivery email --brief /nonexistent/brief.md); rc=$?
+is "$rc" '1' 'an unknown delivery mode is still refused'
+case "$out" in *"unknown --delivery 'email'"*) ok 'and the refusal names the mode' ;;
+  *) fail 'and the refusal names the mode' "got: $out" ;; esac
+
 finish

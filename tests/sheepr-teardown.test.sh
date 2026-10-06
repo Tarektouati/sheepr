@@ -178,6 +178,32 @@ jq -c '.pr_lookup = false' "$FAKE_FLOCK_JSON" >"$FAKE_FLOCK_JSON.tmp" \
   && mv "$FAKE_FLOCK_JSON.tmp" "$FAKE_FLOCK_JSON"
 refused nogh 'could not be looked up' 'pr delivery is refused when pull requests cannot be read'
 
+# --- report delivery (a scout) ---------------------------------------------
+
+wt=$(make_task noreport report)
+flock_doc "$(flock_row "$wt" sheepr/noreport)"
+refused noreport 'report.md is missing or empty' 'a scout with no report is refused'
+
+wt=$(make_task emptyreport report)
+flock_doc "$(flock_row "$wt" sheepr/emptyreport)"
+: >"$SHEEPR_HOME/tasks/emptyreport/report.md"
+refused emptyreport 'report.md is missing or empty' 'a scout with an empty report is refused'
+
+wt=$(make_task dirtyscout report)
+flock_doc "$(flock_row "$wt" sheepr/dirtyscout '.dirty = 2')"
+printf '## 1. idea\n' >"$SHEEPR_HOME/tasks/dirtyscout/report.md"
+refused dirtyscout '2 uncommitted change(s)' 'a scout that changed files is refused'
+
+wt=$(make_task goodscout report)
+flock_doc "$(flock_row "$wt" sheepr/goodscout)"
+printf '## 1. idea\n' >"$SHEEPR_HOME/tasks/goodscout/report.md"
+accepted goodscout 'report.md is written' 'a scout with a report on a clean tree succeeds'
+if ls "$SHEEPR_HOME"/tasks/.archive/goodscout-*/report.md >/dev/null 2>&1; then
+  ok 'the report is kept in the archive'
+else
+  fail 'the report is kept in the archive'
+fi
+
 # --- force ------------------------------------------------------------------
 
 wt=$(make_task discard local)

@@ -29,9 +29,13 @@ Do not work around a refusal. Report it.
 ## 2. Asking before you spawn
 
 Delivery mode is never assumed. Before every spawn, ask the captain how the
-work should reach them: a pull request (`pr`), a pushed branch (`branch`), or
-local commits (`local`). Write their answer into the brief and pass it as
-`--delivery`.
+work should reach them: a pull request (`pr`), a pushed branch (`branch`),
+local commits (`local`), or a written report with no code change (`report`).
+Write their answer into the brief and pass it as `--delivery`.
+
+`report` makes a **scout**. Offer it when the captain asks you to find out,
+investigate, or propose rather than build: "what should we improve in X?".
+The scout writes its proposals to `tasks/<id>/report.md`.
 
 `sheepr-spawn.sh` refuses without it. That refusal is deliberate: guessing how
 finished work reaches a human is not recoverable.
@@ -144,6 +148,15 @@ Merging is the captain's word, never yours. When they give it, merge, then:
 If teardown refuses, that is a finding. Report what it said. Do not reach for
 `--force`.
 
+When a scout reports `done`, read `tasks/<id>/report.md` and give the captain
+its proposals as a numbered list, one line each, with size and risk. Each one
+they pick becomes a new spawn, with its own delivery question. Tear the scout
+down once the captain has seen the list; the report is kept in the archive.
+
+After you report a `done`, and at the end of a periodic report, you may add up
+to three one-line "Proposed next" items: follow-ups the work revealed. They
+are suggestions. Never spawn one without the captain's word.
+
 ## 8. Talking to the captain
 
 Address the human as **Captain**, and open each message to them with it.
@@ -210,6 +223,17 @@ change to a worker, in a worktree, with a delivery mode.
 
 The exception is this file and `CONTEXT.md`, which you may edit directly when
 the captain asks, because they are your own instructions.
+
+When sheepr itself gets in the way, record it. That is: a script refused
+something it should have allowed, a worker was blocked by sheepr's own
+machinery (a sandbox that would not let it commit, for example), or a
+`stalled:` wake turned out to be false. Append one line:
+
+    printf '%s|%s|%s|%s\n' "$(date +%s)" <task-id> "<what happened>" "<proposed change>" \
+        >> tasks/.sheepr-proposals
+
+`sheepr-report.sh` counts them. Mention them to the captain in a periodic
+report. Each one they pick becomes a task on this repository.
 
 Keep this file under 3000 words. It loads on every turn. If something is only
 needed in one situation, it belongs in a script header, not here.

@@ -1,3 +1,4 @@
 tasks/
 *.log
 .DS_Store
+briefs/

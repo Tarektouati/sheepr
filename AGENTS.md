@@ -65,9 +65,11 @@ from `tasks/` and from the fleet view, never from memory of the conversation.
         --delivery <pr|branch|local> \
         --brief <file>
 
-Write the brief to a file first. It should say what to build or find out, and
-any constraint the captain gave. It must not contain `{{placeholders}}`; spawn
-refuses those. Do not write the reporting protocol into it, spawn appends that.
+Write the brief to a file first, one file per task: `briefs/<task-id>.md`
+(gitignored), never a shared path you reuse. It should say what to build or
+find out, and any constraint the captain gave. It must not contain
+`{{placeholders}}`; spawn refuses those. Do not write the reporting protocol
+into it, spawn appends that.
 
 Choose the kind the captain asked for. With no preference, use `cursor`.
 

@@ -13,7 +13,13 @@
 #     supervisor must ask the captain and pass the answer explicitly, because
 #     guessing how finished work reaches a human is never recoverable.
 #   - when the brief still contains a {{placeholder}}.
-#   - when the task id is already in use.
+#   - when the task id is already in use, including by a spawn still running.
+#
+# Safe to run several at once. The --brief file is read exactly once, into a
+# snapshot, so a caller reusing one path for the next brief cannot swap the
+# instructions under a spawn that is still waiting on herdr. The task id is
+# claimed with an atomic mkdir before any side effect, so two spawns of the
+# same id cannot both get through.
 #
 # Environment:
 #   SHEEPR_CODEX_PROFILE  when set and non-empty, a codex worker is started
@@ -70,8 +76,29 @@ esac
 
 [ -n "$BRIEF" ] || die "--brief <file> is required"
 [ -f "$BRIEF" ] || die "brief file not found: $BRIEF"
-if grep -q '{{[^}]*}}' "$BRIEF"; then
-  die "brief still contains placeholders: $(grep -o '{{[^}]*}}' "$BRIEF" | sort -u | tr '\n' ' ')"
+
+# The one and only read of the caller's file. Everything after this, the
+# placeholder check included, reads the snapshot: reading the path again later
+# would pick up whatever the caller wrote there in the meantime.
+SNAPSHOT=$(mktemp "${TMPDIR:-/tmp}/sheepr-brief-XXXXXX") || die "could not snapshot the brief"
+TASK_DIR=''
+CLAIMED=0
+
+# Until meta is written the task is invisible to every other command, so a
+# failed spawn must not leave its claim behind: the id would stay taken by a
+# directory nothing lists. Once meta exists the task is real and is kept, as
+# before, for inspection.
+cleanup() {
+  rm -f "$SNAPSHOT"
+  if [ "$CLAIMED" = 1 ] && [ ! -f "$TASK_DIR/meta" ]; then
+    rm -rf "$TASK_DIR"
+  fi
+}
+trap cleanup EXIT
+
+cp "$BRIEF" "$SNAPSHOT" || die "could not read the brief: $BRIEF"
+if grep -q '{{[^}]*}}' "$SNAPSHOT"; then
+  die "brief still contains placeholders: $(grep -o '{{[^}]*}}' "$SNAPSHOT" | sort -u | tr '\n' ' ')"
 fi
 
 REPO=$(cd "$REPO_ARG" 2>/dev/null && pwd) || die "repo path not found: $REPO_ARG"
@@ -79,14 +106,27 @@ git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository:
 
 sheepr_herdr_require
 sheepr_ensure_home
-sheepr_task_exists "$ID" && die "task '$ID' already exists; tear it down first"
+
+# --- claim the id -----------------------------------------------------------
+#
+# mkdir without -p is atomic and fails when the directory exists, so exactly
+# one spawn of an id gets past here. Checking for meta first and creating the
+# directory later left the whole worktree creation in between, and two spawns
+# of one id could both pass the check.
+
+TASK_DIR=$(sheepr_task_dir "$ID")
+if ! mkdir "$TASK_DIR" 2>/dev/null; then
+  sheepr_task_exists "$ID" && die "task '$ID' already exists; tear it down first"
+  die "task '$ID' is being spawned by another sheepr-spawn.sh, or an earlier one died: remove $TASK_DIR once no spawn of '$ID' is running"
+fi
+CLAIMED=1
+mv -f "$SNAPSHOT" "$TASK_DIR/brief.md" || die "could not store the brief in $TASK_DIR"
 
 # --- create -----------------------------------------------------------------
 
 BRANCH="sheepr/$ID"
 LABEL="sheepr-$ID"
 NAME="sheepr-$ID"
-TASK_DIR=$(sheepr_task_dir "$ID")
 STATUS=$(sheepr_status_file "$ID")
 
 git -C "$REPO" show-ref --verify --quiet "refs/heads/$BRANCH" \
@@ -98,7 +138,6 @@ WS=$(printf '%s' "$OUT" | cut -f1)
 PANE=$(printf '%s' "$OUT" | cut -f2)
 WORKTREE=$(printf '%s' "$OUT" | cut -f3)
 
-mkdir -p "$TASK_DIR"
 : >"$STATUS"
 
 sheepr_meta_set "$ID" workspace "$WS"
@@ -120,8 +159,6 @@ case "$DELIVERY" in
   local)  EVIDENCE='Commit your work on this branch and leave it unpushed. Put the final commit subject in the done line.' ;;
 esac
 
-cp "$BRIEF" "$TASK_DIR/brief.md"
-
 # The brief lives inside the worktree so the doorbell can stay a fixed "./brief.md"
 # for every agent kind. Exclude it locally so it never shows up as an untracked
 # change, which teardown would otherwise read as unlanded work.
@@ -133,7 +170,7 @@ if [ -n "$EXCLUDE" ]; then
 fi
 
 {
-  cat "$BRIEF"
+  cat "$TASK_DIR/brief.md"
   cat <<BRIEF_TAIL
 
 ---

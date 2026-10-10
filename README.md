@@ -304,17 +304,24 @@ Create a task and start its worker.
 
 ```sh
 ./bin/sheepr-spawn.sh ~/code/myapp fix-login \
-    --kind cursor --delivery pr --brief /tmp/brief.md
+    --kind cursor --delivery pr --brief briefs/fix-login.md
 ```
 
 It creates the branch `sheepr/<id>` in a new worktree and Herdr workspace,
 writes the brief plus the protocol to `brief.md` in the worktree, starts the
 worker, and tells it to read `./brief.md`. The brief never goes through argv.
 
+Spawns are safe to run in parallel. Spawn reads the `--brief` file once, at the
+start, and works from that copy, so rewriting the file while a spawn waits on
+Herdr cannot change what its worker gets. Still give each task its own brief
+file, such as `briefs/<id>.md`: one shared path is easy to overwrite before you
+meant to.
+
 A task id is lowercase letters, digits and hyphens, starting with a letter, at
 most 25 characters. Spawn refuses without `--kind` or `--delivery`, when the
-brief still holds a `{{placeholder}}`, when the id is in use, and when the
-branch already exists.
+brief still holds a `{{placeholder}}`, when the id is in use (including by a
+spawn of the same id that is still running), and when the branch already
+exists.
 
 ### sheepr-watch.sh
 
@@ -552,7 +559,7 @@ Two variables are read but never set by you, because the harness sets them:
 ```sh
 SHEEPR_STALL=600 SHEEPR_POLL=30 ./bin/sheepr-watch.sh
 SHEEPR_CODEX_PROFILE=work ./bin/sheepr-spawn.sh ~/code/myapp fix-login \
-    --kind codex --delivery branch --brief /tmp/brief.md
+    --kind codex --delivery branch --brief briefs/fix-login.md
 ```
 
 ## Rules it enforces
@@ -584,7 +591,7 @@ Inside `tasks/`:
 ```
 tasks/<id>/meta           workspace, pane, worktree, branch, kind, delivery
 tasks/<id>/status         the status log
-tasks/<id>/brief.md       the brief as the supervisor wrote it
+tasks/<id>/brief.md       the brief as the supervisor wrote it, copied when spawn started
 tasks/.wakes              every wake, one line each
 tasks/.watch-triage.log   every decision that did not wake
 tasks/.watch.lock/        held by the one watcher that owns the fleet: pid, and pane for --wake-pane

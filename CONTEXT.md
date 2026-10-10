@@ -48,6 +48,25 @@ supervisor; any other watcher that finds the lock held leaves.
 
 There is no default. The supervisor asks the captain every time.
 
+**route** - the kind, model and default budget chosen for a task, from the
+first matching rule in `routes`. `bin/sheepr-route.sh`. The captain's
+explicit kind, model or budget always overrides it. There is no fallback:
+an unavailable harness is a refusal.
+
+**traits** - what the router matches on: type, size, risk, and repo.
+
+**model** - the model a worker runs. claude uses Claude models, cursor uses
+Cursor's model list, and codex runs only through codex-cursor-bridge, so its
+models are Cursor's too.
+
+**usage** - the tokens a worker has spent, read from its harness's own
+session log by `bin/sheepr-usage.sh`. When it cannot be read, it is
+`unknown`, never an estimate.
+
+**budget** - the token limit for one task, recorded in meta. Crossing it
+interrupts the worker and wakes the supervisor (**over budget**). The work is
+kept.
+
 ## Actions
 
 **spawn** - create a task and start its worker. `bin/sheepr-spawn.sh`.

@@ -323,6 +323,34 @@ brief still holds a `{{placeholder}}`, when the id is in use (including by a
 spawn of the same id that is still running), and when the branch already
 exists.
 
+Optional: `--model <id>` is passed to the harness (claude and cursor as
+`--model`, codex as `-m`); without it the harness runs its own default.
+`--budget <tokens>` and `--route <rule>` are recorded in the task's meta.
+All three are printed in the spawn summary.
+
+### sheepr-route.sh
+
+Pick the kind, model and token budget for a task from the `routes` table.
+
+```sh
+./bin/sheepr-route.sh --type <fix|feature|refactor|research|review|docs> \
+    --size <small|medium|large> --risk <low|high> --repo <path>
+```
+
+```
+$ ./bin/sheepr-route.sh --type docs --size small --risk low --repo ~/code/myapp
+cursor composer-2.5 300000 small-docs
+```
+
+`routes` sits at the repository root and is yours to edit: one rule per
+line, first match wins, `*` matches anything, and its header explains each
+column. The router refuses an unknown trait, a malformed table, no matching
+rule, an unknown kind, and a harness that is not installed. It never falls
+back to another harness. A codex route also needs `SHEEPR_CODEX_PROFILE` and a
+model listed in codex-cursor-bridge's catalog,
+`$CODEX_HOME/cursor-bridge-models.json`. Whatever kind, model or budget you
+name yourself wins over the route.
+
 ### sheepr-watch.sh
 
 The supervision loop. It spends no tokens while it waits. A supervisor runs it

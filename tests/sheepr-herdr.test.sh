@@ -70,6 +70,33 @@ for bad in 'a b' 'a;rm -rf /' '$(id)' '--sandbox' '-p' '../other'; do
     *) fail 'the refusal names the variable' "got: $out" ;; esac
 done
 
+# --- the model -------------------------------------------------------------
+#
+# Each harness spells the flag its own way. Getting it wrong does not fail the
+# launch: the harness quietly runs its default model and the route is ignored.
+
+is "$(args cursor '' composer-2.5)" '--force,--trust,--model,composer-2.5' \
+  'cursor takes --model'
+is "$(args claude '' claude-opus-5-5)" '--dangerously-skip-permissions,--model,claude-opus-5-5' \
+  'claude takes --model'
+is "$(args codex /tmp/t1 gpt-5.5)" \
+  '-s,workspace-write,-a,never,--add-dir,/tmp/t1,-m,gpt-5.5' 'codex takes -m'
+
+SHEEPR_CODEX_PROFILE=cursor-bridge
+is "$(args codex /tmp/t1 composer-2.5)" \
+  '-s,workspace-write,-a,never,--add-dir,/tmp/t1,-p,cursor-bridge,-m,composer-2.5' \
+  'codex keeps -p <profile> alongside -m'
+unset SHEEPR_CODEX_PROFILE
+
+is "$(args claude '' '')" '--dangerously-skip-permissions' 'an empty model adds no flag'
+
+# A model id lands in an agent command line just as a profile does.
+for bad in 'a b' 'm;id' '$(id)' '--sandbox' '-m' '../x' 'gpt[high]'; do
+  out=$(args cursor '' "$bad" 2>&1); rc=$?
+  is "$rc" '1' "an invalid model is refused: $bad"
+done
+sheepr_model_valid 'claude-sonnet-4.5_x'; is "$?" '0' 'a model id with . - _ is valid'
+
 # --- delivery is proved by the status log, never by `done` ------------------
 #
 # The regression that matters: a worker that had already ended its turn reads

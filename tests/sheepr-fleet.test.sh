@@ -12,14 +12,14 @@
 begin
 use_fake_flock
 
-mktask() {  # <id> <worktree> [delivery]
+mktask() {  # <id> <worktree> [delivery] [kind]
   mkdir -p "$SHEEPR_HOME/tasks/$1"
   cat >"$SHEEPR_HOME/tasks/$1/meta" <<EOF
 worktree=$2
 repo=/repo
 branch=sheepr/$1
 delivery=${3:-local}
-kind=cursor
+kind=${4:-cursor}
 label=sheepr-$1
 name=sheepr-$1
 EOF
@@ -96,6 +96,59 @@ case "$out" in *'1 stale task'*) ok 'the summary counts stale tasks' ;;
   *) fail 'the summary counts stale tasks' "got: $out" ;; esac
 
 rm -rf "$SHEEPR_HOME/tasks/ghost"
+
+# --- usage ------------------------------------------------------------------
+
+# alpha is a cursor task, so its usage is unknown. beta is a claude task
+# whose session log is the usage fixture for /wt/alpha: 413 tokens.
+mktask beta /wt/alpha-claude local claude
+mkdir -p "$SHEEPR_HOME/claude-link/projects"
+ln -s "$SHEEPR_ROOT/tests/fixtures/usage/claude/projects/-wt-alpha" \
+  "$SHEEPR_HOME/claude-link/projects/-wt-alpha-claude"
+SHEEPR_CLAUDE_HOME="$SHEEPR_HOME/claude-link"
+export SHEEPR_CLAUDE_HOME
+flock_doc \
+  "$(flock_row /wt/alpha sheepr/alpha)" \
+  "$(flock_row /wt/alpha-claude sheepr/beta)" \
+  "$(flock_row /wt/stranger sheepr/stranger)"
+
+j=$(fleet_json)
+is "$(printf '%s' "$j" | jq -r '.tasks[] | select(.task == "beta") | .tokens')" '413' \
+  'a task row carries its tokens'
+is "$(printf '%s' "$j" | jq -r '.tasks[] | select(.task == "alpha") | .tokens')" 'null' \
+  'a task whose usage is unknown carries null, not zero'
+is "$(printf '%s' "$j" | jq -c '.usage')" \
+  '{"fleet_total":413,"measured":1,"unknown":1,"supervisor":null}' \
+  'the usage summary totals the measured tasks and counts the unknown'
+
+out=$(fleet --repo /repo)
+case "$out" in *TOKENS*) ok 'the table has a tokens column' ;;
+  *) fail 'the table has a tokens column' "got: $out" ;; esac
+alpha_line=$(printf '%s\n' "$out" | grep '^alpha ')
+case "$alpha_line" in *' ? '*) ok 'unknown usage shows as ?' ;;
+  *) fail 'unknown usage shows as ?' "got: $alpha_line" ;; esac
+beta_line=$(printf '%s\n' "$out" | grep '^beta ')
+case "$beta_line" in *' 413 '*) ok 'measured usage shows its tokens' ;;
+  *) fail 'measured usage shows its tokens' "got: $beta_line" ;; esac
+case "$out" in *'tokens: fleet 413 over 1 task(s), 1 unknown; supervisor ?'*)
+  ok 'the footer gives the fleet total and the supervisor spend' ;;
+  *) fail 'the footer gives the fleet total and the supervisor spend' "got: $out" ;; esac
+
+# The supervisor's spend is read from sessions in sheepr's own directory.
+home_slug=$(cd "$SHEEPR_HOME" && pwd -P | sed 's/[^A-Za-z0-9]/-/g')
+mkdir -p "$SHEEPR_HOME/claude-link/projects/$home_slug"
+printf '%s\n' '{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":1200,"output_tokens":300,"cache_read_input_tokens":2500000,"cache_creation_input_tokens":0}}}' \
+  >"$SHEEPR_HOME/claude-link/projects/$home_slug/s.jsonl"
+is "$(fleet_json | jq -r '.usage.supervisor')" '2501500' 'the supervisor spend is reported'
+case "$(fleet --repo /repo)" in *'supervisor 2.5M'*) ok 'and shown in the footer, abbreviated' ;;
+  *) fail 'and shown in the footer, abbreviated' "got: $(fleet --repo /repo)" ;; esac
+
+if sheepr_meta_get beta usage_source >/dev/null; then
+  fail 'the fleet view does not record usage_source'
+else
+  ok 'the fleet view does not record usage_source'
+fi
+rm -rf "$SHEEPR_HOME/tasks/beta"
 
 # --- read only --------------------------------------------------------------
 

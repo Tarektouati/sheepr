@@ -189,11 +189,13 @@ Each refuses rather than guesses. Read the header comment before using one.
 | `bin/sheepr-send.sh` | reply to a worker, resolve a key, answer a dialog |
 | `bin/sheepr-teardown.sh` | retire a task once its work has landed |
 | `bin/sheepr-test.sh` | run the tests |
-| `bin/sheepr-lint.sh` | check every script |
+| `bin/sheepr-usage.sh` | a task's tokens, or the supervisor's own (`self`) |
+| `bin/sheepr-lint.sh` | check every script, and AGENTS.md's word limit |
 
 Two files are adapters, and nothing else may bypass them.
 `bin/sheepr-herdr.sh` is the only file that runs `herdr`.
 `bin/sheepr-flock.sh` is the only file that runs `flock`.
+`bin/sheepr-usage.sh` is the only file that reads harness session logs.
 If you need an operation that is not there, add it there.
 
 ## 10. flock

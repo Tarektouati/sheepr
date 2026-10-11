@@ -21,6 +21,12 @@ SHEEPR_HOME=$(mktemp -d "${TMPDIR:-/tmp}/sheepr-test-XXXXXX")
 export SHEEPR_HOME
 mkdir -p "$SHEEPR_HOME/tasks"
 
+# Harness session logs, too: usage must never be read from the real ones.
+# Empty by default; tests/sheepr-usage.test.sh points these at fixtures.
+SHEEPR_CLAUDE_HOME="$SHEEPR_HOME/claude-home"
+CODEX_HOME="$SHEEPR_HOME/codex-home"
+export SHEEPR_CLAUDE_HOME CODEX_HOME
+
 cleanup_home() { [ -n "${SHEEPR_HOME:-}" ] && rm -rf "$SHEEPR_HOME"; }
 trap cleanup_home EXIT
 

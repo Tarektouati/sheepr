@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # bin/sheepr-lint.sh - syntax and style check for every script.
 #
-# Owns: what "clean" means for this repository.
+# Owns: what "clean" means for this repository, including the size of
+# AGENTS.md. It loads on every supervisor turn, so it is capped at
+# SHEEPR_AGENTS_MAX_WORDS words (3000; the tests lower it).
 #
-# shellcheck is used when installed. When it is not, the syntax check still
+# When shellcheck is installed it is used. When it is not, the syntax check still
 # runs, so this script is never a reason to skip linting.
 
 set -uo pipefail
@@ -27,6 +29,19 @@ for f in "${FILES[@]}"; do
   fi
 done
 rm -f /tmp/sheepr-lint-err
+
+echo "== AGENTS.md =="
+max=${SHEEPR_AGENTS_MAX_WORDS:-3000}
+words=$(wc -w <AGENTS.md 2>/dev/null | tr -d ' ')
+if [ -z "$words" ]; then
+  printf '  FAIL AGENTS.md could not be read\n'
+  rc=1
+elif [ "$words" -gt "$max" ]; then
+  printf '  FAIL AGENTS.md is %s words; the limit is %s\n' "$words" "$max"
+  rc=1
+else
+  printf '  ok   %s words, limit %s\n' "$words" "$max"
+fi
 
 echo
 if command -v shellcheck >/dev/null 2>&1; then

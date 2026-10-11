@@ -403,10 +403,12 @@ A read-only view of every worktree, not just the ones sheepr made.
 
 ```
 $ ./bin/sheepr-fleet.sh --repo ~/code/myapp
-TASK                  STATE     AGENT    BRANCH              DIRTY  AHEAD  PR         PATH
-fix-login             question  idle     sheepr/fix-login    0      2      -          /Users/you/.herdr/worktrees/myapp/sheepr-fix-login
-(orphan)              -         -        spike-cache         3      1      -          /Users/you/code/myapp-spike
-old-docs (stale)      done      -        -                   ?      ?      -          /Users/you/.herdr/worktrees/myapp/sheepr-old-docs
+TASK                  STATE     AGENT    TOKENS  BRANCH              DIRTY  AHEAD  PR         PATH
+fix-login             question  idle     1.4M    sheepr/fix-login    0      2      -          /Users/you/.herdr/worktrees/myapp/sheepr-fix-login
+(orphan)              -         -        -       spike-cache         3      1      -          /Users/you/code/myapp-spike
+old-docs (stale)      done      -        ?       -                   ?      ?      -          /Users/you/.herdr/worktrees/myapp/sheepr-old-docs
+
+tokens: fleet 1.4M over 1 task(s), 1 unknown; supervisor 20.2M
 
 1 orphaned worktree(s): not sheepr tasks, so no sheepr command protects them.
   1 of them hold uncommitted work. Decide before anything removes them.
@@ -421,7 +423,12 @@ There are three kinds of row:
   it, and no sheepr command protects it.
 - **stale**: a task record whose worktree no longer exists.
 
-`--json` prints an object with `tasks`, `orphans`, `stale` and `all` arrays.
+`TOKENS` is the task's usage from `sheepr-usage.sh`; `?` means it could not be
+read. The footer gives the total over the tasks shown and the supervisor's own
+spend.
+
+`--json` prints an object with `tasks`, `orphans`, `stale` and `all` arrays,
+and a `usage` object: `fleet_total`, `measured`, `unknown` and `supervisor`.
 Fleet never changes anything.
 
 ### sheepr-status.sh
@@ -490,6 +497,30 @@ removes the workspace and worktree, and moves the task's records to
 A refusal is a finding, not an obstacle. `--force` skips the check, and is
 only for work you have said, in as many words, to discard.
 
+### sheepr-usage.sh
+
+What a worker spent in tokens, read from its harness's own session log. The
+only file that reads those logs.
+
+```sh
+./bin/sheepr-usage.sh task fix-login         # 1409233 38 14112 claude
+./bin/sheepr-usage.sh task fix-login --json  # with cache_read and cache_creation
+./bin/sheepr-usage.sh self                   # the supervisor's own spend
+```
+
+One line: `<total> <input> <output> <source>`, or `unknown <reason>`. Input
+counts fresh tokens only; cache reads and cache writes are separate, in
+`--json`, and in the total. It never estimates:
+
+| kind | read from |
+|---|---|
+| claude | `~/.claude/projects/<slug of the worktree>/**/*.jsonl`, each message once |
+| codex | `~/.codex/{sessions,archived_sessions}/**/rollout-*.jsonl` whose cwd is the worktree; the last cumulative count per session |
+| cursor | nothing: cursor-agent keeps no usage record, so it is always `unknown cursor-unreadable` |
+
+`self` sums every harness's sessions in sheepr's own directory. The first read
+of a task records `usage_source` in its meta; `--read-only` skips that.
+
 ### sheepr-test.sh
 
 Run the tests.
@@ -504,7 +535,8 @@ Tests that need a live Herdr print `skip:` when one is not available.
 ### sheepr-lint.sh
 
 Check every script: `bash -n` always, and `shellcheck` at warning level when it
-is installed.
+is installed. It also fails when `AGENTS.md` is over 3000 words, because the
+supervisor loads it on every turn.
 
 ```sh
 ./bin/sheepr-lint.sh
@@ -575,6 +607,9 @@ All optional. Durations are in seconds.
 | `SHEEPR_FLOCK` | unset | the flock skill directory; must contain an executable `scripts/wt-status.sh`. Checked before `~/.agents/skills/flock` and `~/.claude/skills/flock` |
 | `SHEEPR_HOME` | `SHEEPR_ROOT` | where `tasks/` lives |
 | `SHEEPR_ROOT` | the checkout holding `bin/` | the sheepr checkout |
+| `SHEEPR_CLAUDE_HOME` | `~/.claude` | where `sheepr-usage.sh` reads claude session logs |
+| `CODEX_HOME` | `~/.codex` | where `sheepr-usage.sh` reads codex rollouts |
+| `SHEEPR_AGENTS_MAX_WORDS` | `3000` | the AGENTS.md word limit `sheepr-lint.sh` enforces |
 | `SHEEPR_CODEX_PROFILE` | unset | when set and non-empty, codex workers start with `-p <profile>`. Letters, digits, `-` and `_` only, and not a leading `-`; anything else is refused |
 
 Two variables are read but never set by you, because the harness sets them:
@@ -609,7 +644,8 @@ CONTEXT.md          the vocabulary
 .codex/hooks.json   Codex's turn-end hook that arms the watcher
 .cursor/hooks.json  Cursor's turn-end hook, a safety net that never parks
 bin/                the scripts; sheepr-herdr.sh is the only one that runs herdr,
-                    sheepr-flock.sh the only one that runs flock
+                    sheepr-flock.sh the only one that runs flock,
+                    sheepr-usage.sh the only one that reads harness session logs
 tasks/              per-task state, gitignored
 tests/              run with ./bin/sheepr-test.sh
 ```
@@ -617,7 +653,7 @@ tests/              run with ./bin/sheepr-test.sh
 Inside `tasks/`:
 
 ```
-tasks/<id>/meta           workspace, pane, worktree, branch, kind, delivery
+tasks/<id>/meta           workspace, pane, worktree, branch, kind, delivery, usage_source
 tasks/<id>/status         the status log
 tasks/<id>/brief.md       the brief as the supervisor wrote it, copied when spawn started
 tasks/.wakes              every wake, one line each

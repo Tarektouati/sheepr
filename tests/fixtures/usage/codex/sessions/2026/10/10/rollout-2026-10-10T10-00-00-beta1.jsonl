@@ -1,0 +1,6 @@
+{"type":"session_meta","payload":{"id":"s-beta-1","cwd":"/wt/beta","originator":"codex_exec"}}
+{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":null}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":10,"reasoning_output_tokens":0,"total_tokens":110}},"rate_limits":null}}
+{"type":"response_item","payload":{"type":"message"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":120,"output_tokens":30,"reasoning_output_tokens":0,"total_tokens":330}},"rate_limits":null}}
+{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":null}}

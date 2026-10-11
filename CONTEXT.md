@@ -63,9 +63,10 @@ models are Cursor's too.
 session log by `bin/sheepr-usage.sh`. When it cannot be read, it is
 `unknown`, never an estimate.
 
-**budget** - the token limit for one task, recorded in meta. Crossing it
-interrupts the worker and wakes the supervisor (**over budget**). The work is
-kept.
+**budget** - the token limit for one task, recorded in meta. It is measured
+against fresh input plus output tokens; cache reads and cache creation do not
+count. Reaching it interrupts the worker and wakes the supervisor (**over
+budget**). The work is kept. `bin/sheepr-send.sh <id> --budget` raises it.
 
 ## Actions
 

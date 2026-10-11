@@ -34,16 +34,34 @@
 #     corroborated by the status log or by file writes in the worktree.
 #   - to wake twice for the same thing. Each wake records a signature; an
 #     unchanged signature is absorbed to the triage log instead.
+#   - to discard work over a budget. Crossing it interrupts the current turn;
+#     the session, the worktree and the status log are all kept.
 #
 # The decision ladder, per task, first match wins:
 #
-#   1. Fold the status log. question / blocked / done / failed -> wake.
-#   2. Ask herdr. blocked -> wake. missing -> try label recovery, then wake.
+#   1. Budget, when meta has one and the log is not done or failed. Read the
+#      usage with bin/sheepr-usage.sh. Spent is input + output: fresh input
+#      tokens plus output tokens. Cache reads and cache creation do not count
+#      toward a budget. At or over the budget -> interrupt the worker if herdr
+#      says it is working (every pass, so nothing more is spent), and wake
+#      `overbudget: <id> <spent>/<budget>` once per budget. Raising the budget
+#      (sheepr-send.sh --budget) re-arms it. Usage `unknown` -> wake
+#      `warning: <id> budget not enforced (<reason>)` once per budget. A
+#      reason that can clear by itself (no session or no counts yet, as at
+#      spawn) is warned only once it has lasted SHEEPR_STALL seconds. Once
+#      either wake is delivered, the ladder carries on below it, so a later
+#      question or done still wakes.
+#   2. Fold the status log. question / blocked / done / failed -> wake.
+#   3. Ask herdr. blocked -> wake. missing -> try label recovery, then wake.
 #      working -> alive, next task.
-#   3. idle / done / unknown prove nothing. Look for evidence of life: has the
+#   4. idle / done / unknown prove nothing. Look for evidence of life: has the
 #      status log grown, or has any file in the worktree changed inside the
 #      quiet window? If neither, and the window is older than SHEEPR_STALL,
 #      wake as stalled.
+#
+# Every wake is one line. Text quoted from a status log is cut to
+# SHEEPR_EXCERPT characters (120): the wake lands in the supervisor's context,
+# and the full line is one `sheepr-status.sh fold` away.
 
 set -uo pipefail
 
@@ -60,6 +78,7 @@ SHEEPR_SCAN_TIMEOUT=${SHEEPR_SCAN_TIMEOUT:-10}
 # stay below the hook timeout in .claude/settings.json (28800), or the harness
 # can kill it between delivering a wake and recording it.
 SHEEPR_HOOK_MAX=${SHEEPR_HOOK_MAX:-28000}
+SHEEPR_EXCERPT=${SHEEPR_EXCERPT:-120}
 
 TRIAGE="$SHEEPR_TASKS/.watch-triage.log"
 WATCH_LOCK="$SHEEPR_TASKS/.watch.lock"
@@ -112,6 +131,100 @@ worktree_written_since() {  # <worktree> <ref-file>
   return 1
 }
 
+# --- budget -----------------------------------------------------------------
+
+# One line of at most SHEEPR_EXCERPT characters. Control characters, tabs and
+# newlines among them, become spaces: a tab would split the wake record.
+excerpt() {  # <text>
+  local t=${1//[[:cntrl:]]/ }
+  if [ "${#t}" -gt "$SHEEPR_EXCERPT" ]; then
+    t="${t:0:$((SHEEPR_EXCERPT - 3))}..."
+  fi
+  printf '%s' "$t"
+}
+
+# The usage adapter's one-line answer for a task. A function so the tests can
+# put their own answer in its place.
+task_usage() {  # <task-id>
+  bash "$SHEEPR_ROOT/bin/sheepr-usage.sh" task "$1" 2>/dev/null
+}
+
+# Ladder step 1. Print "<signature>\t<reason>" and return 0 when the budget
+# needs the supervisor, return 1 when it does not.
+#
+# A budget wake is remembered apart from .woke (in .budget-woke, written by
+# commit_wake), because .woke is overwritten by the next wake of any kind, and
+# the budget wake would then come round again after every question.
+inspect_budget() {  # <task-id> <dir>
+  local id=$1 dir=$2 budget out spent name reason sig began
+  budget=$(sheepr_meta_get "$id" budget) || return 1
+  [[ $budget =~ ^[1-9][0-9]*$ ]] || {
+    sig="budget-bad:$budget"
+    [ "$(cat "$dir/.budget-woke" 2>/dev/null)" = "$sig" ] && return 1
+    printf '%s\t%s' "$sig" "warning: $id budget not enforced (meta budget '$(excerpt "$budget")' is not a token count)"
+    return 0
+  }
+  out=$(task_usage "$id") || out=''
+  [ -n "$out" ] || out='unknown usage-unreadable'
+
+  case "$out" in
+    unknown\ *)
+      reason=${out#unknown }
+      sig="warning:$budget"
+      [ "$(cat "$dir/.budget-woke" 2>/dev/null)" = "$sig" ] && return 1
+      case "$reason" in
+        *-no-session|*-no-usage)
+          # Normal for a worker that has only just started. Give it the stall
+          # window to write its first counts before calling it unenforced.
+          [ -f "$dir/.usage-unknown-since" ] || touch "$dir/.usage-unknown-since"
+          began=$(stat -f %m "$dir/.usage-unknown-since" 2>/dev/null \
+                  || stat -c %Y "$dir/.usage-unknown-since" 2>/dev/null) || began=0
+          if [ $(( $(sheepr_now) - began )) -lt "$SHEEPR_STALL" ]; then
+            triage "$id" "usage unknown ($reason); waiting before warning"
+            return 1
+          fi
+          ;;
+      esac
+      printf '%s\t%s' "$sig" "warning: $id budget not enforced ($(excerpt "$reason"))"
+      return 0
+      ;;
+  esac
+  rm -f "$dir/.usage-unknown-since"
+
+  # <total> <input> <output> <source>. Input already excludes cache tokens.
+  local input output
+  read -r _ input output _ <<<"$out"
+  if ! [[ $input =~ ^[0-9]+$ && $output =~ ^[0-9]+$ ]]; then
+    triage "$id" "usage unparseable: $(excerpt "$out")"
+    sig="warning:$budget"
+    [ "$(cat "$dir/.budget-woke" 2>/dev/null)" = "$sig" ] && return 1
+    printf '%s\t%s' "$sig" "warning: $id budget not enforced (usage unparseable)"
+    return 0
+  fi
+  spent=$((input + output))
+  [ "$spent" -ge "$budget" ] || return 1
+
+  # Over. Stop the spending first, whether or not the wake is new: a worker
+  # resumed without a raised budget is stopped again.
+  name=$(sheepr_meta_get "$id" name) || name="sheepr-$id"
+  local note=''
+  if [ "$(sheepr_agent_state "$name")" = working ]; then
+    if sheepr_agent_interrupt "$name"; then
+      triage "$id" "over budget ($spent/$budget); interrupted"
+    else
+      triage "$id" "over budget ($spent/$budget); interrupt FAILED"
+      note=' (interrupt failed; the worker may still be spending)'
+    fi
+  fi
+
+  # A failed interrupt is a different thing to report than a clean one.
+  sig="over:$budget"
+  [ -z "$note" ] || sig="$sig:interrupt-failed"
+  [ "$(cat "$dir/.budget-woke" 2>/dev/null)" = "$sig" ] && return 1
+  printf '%s\t%s' "$sig" "overbudget: $id $spent/$budget$note"
+  return 0
+}
+
 # --- per task ---------------------------------------------------------------
 
 # Print "<signature>\t<reason>" when the task is actionable, nothing when not.
@@ -119,20 +232,27 @@ inspect_task() {  # <task-id>
   local id=$1 dir fold state key text agent
   dir=$(sheepr_task_dir "$id")
 
-  # 1. the status log is authoritative about what the worker has said
   fold=$(sheepr_status_fold "$id")
   state=${fold%%|*}
   key=$(printf '%s' "$fold" | cut -d'|' -f2)
   text=$(printf '%s' "$fold" | cut -d'|' -f3-)
 
+  # 1. the budget. A finished task spends nothing more.
   case "$state" in
-    question) printf '%s\t%s' "q:$key:$text" "question: $id - ${key}: $text"; return 0 ;;
-    blocked)  printf '%s\t%s' "b:$key:$text" "blocked: $id - $text"; return 0 ;;
-    done)     printf '%s\t%s' "d:$text" "done: $id - $text"; return 0 ;;
-    failed)   printf '%s\t%s' "f:$text" "failed: $id - $text"; return 0 ;;
+    done|failed) ;;
+    *) inspect_budget "$id" "$dir" && return 0 ;;
   esac
 
-  # 2. ask herdr
+  # 2. the status log is authoritative about what the worker has said. The
+  # signature keeps the whole text; only the printed reason is cut.
+  case "$state" in
+    question) printf '%s\t%s' "q:$key:$text" "question: $id - $(excerpt "${key}: $text")"; return 0 ;;
+    blocked)  printf '%s\t%s' "b:$key:$text" "blocked: $id - $(excerpt "$text")"; return 0 ;;
+    done)     printf '%s\t%s' "d:$text" "done: $id - $(excerpt "$text")"; return 0 ;;
+    failed)   printf '%s\t%s' "f:$text" "failed: $id - $(excerpt "$text")"; return 0 ;;
+  esac
+
+  # 3. ask herdr
   local name
   name=$(sheepr_meta_get "$id" name) || name="sheepr-$id"
   agent=$(sheepr_agent_state "$name")
@@ -156,7 +276,7 @@ inspect_task() {  # <task-id>
     working) rm -f "$dir/.quiet-since"; triage "$id" "working"; return 1 ;;
   esac
 
-  # 3. idle, done, unknown: prove nothing. Look for evidence of life.
+  # 4. idle, done, unknown: prove nothing. Look for evidence of life.
   local size prev
   size=$(wc -c <"$(sheepr_status_file "$id")" 2>/dev/null | tr -d ' ') || size=0
   prev=$(cat "$dir/.seen-size" 2>/dev/null || printf '0')
@@ -224,6 +344,9 @@ find_wake() {
 # Record a delivered wake, so it is not delivered again.
 commit_wake() {  # <task-id> <signature> <reason>
   printf '%s' "$2" >"$(sheepr_task_dir "$1")/.woke"
+  case "$2" in
+    over:*|warning:*|budget-bad:*) printf '%s' "$2" >"$(sheepr_task_dir "$1")/.budget-woke" ;;
+  esac
   mkdir -p "$(dirname "$SHEEPR_WAKES")"
   printf '%s|%s|%s\n' "$(sheepr_now)" "$1" "$3" >>"$SHEEPR_WAKES"
 }

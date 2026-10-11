@@ -24,7 +24,10 @@
 #              ids, cursor and codex take Cursor model ids. Letters, digits,
 #              `.`, `-` and `_`.
 #   budget     the task's default token budget, a positive integer.
-#              `--budget` on spawn overrides it.
+#              `--budget` on spawn overrides it. Spent is counted as fresh
+#              input plus output tokens: cache reads and cache creation do
+#              not count toward a budget. At or over it, the watcher
+#              interrupts the worker and wakes the supervisor.
 #
 # The defaults are conservative: anything risky or large goes to the
 # strongest model, only small low-risk fixes and docs go to the cheap one.

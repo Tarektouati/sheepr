@@ -339,7 +339,7 @@ Pick the kind, model and token budget for a task from the `routes` table.
 
 ```
 $ ./bin/sheepr-route.sh --type docs --size small --risk low --repo ~/code/myapp
-cursor composer-2.5 300000 small-docs
+cursor composer-2.5 50000 small-docs
 ```
 
 `routes` sits at the repository root and is yours to edit: one rule per

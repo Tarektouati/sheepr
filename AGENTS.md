@@ -80,7 +80,7 @@ Unless the captain named a kind or model, route the task first:
 It prints `<kind> <model> <budget> <rule>`. Pass them to spawn as `--kind`,
 `--model`, `--budget` and `--route`. Whatever the captain named wins over the
 route. When you ask for the delivery mode, state the route in one line, e.g.
-"Routing to claude/claude-sonnet-5-5, 1.5M token budget." If the router
+"Routing to claude/claude-sonnet-5-5, 100k token budget." If the router
 refuses, report it; never pick a substitute harness.
 
 Task ids are lowercase letters, digits and hyphens, at most 25 characters.

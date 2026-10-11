@@ -4,9 +4,15 @@
 # Usage:
 #   sheepr-send.sh <task-id> <text> [--resolve <key>]
 #   sheepr-send.sh <task-id> --keys <key> [<key>...]
+#   sheepr-send.sh <task-id> --budget <tokens>
 #
-# Owns: delivering the supervisor's reply to a running worker, and closing the
-# question or blocker that reply answers.
+# Owns: delivering the supervisor's reply to a running worker, closing the
+# question or blocker that reply answers, and raising a task's budget.
+#
+# --budget only records the new budget in meta; it sends nothing. The watcher
+# wakes `overbudget:` once per budget, so a new budget re-arms it. To resume a
+# worker the watcher stopped, raise the budget first, then send an ordinary
+# reply. Resumed without a raise, it is still over and is stopped again.
 #
 # Refuses:
 #   - to resolve a key that is not open. Closing a key nobody asked about
@@ -24,11 +30,22 @@ set -uo pipefail
 # shellcheck source=bin/sheepr-status.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sheepr-status.sh"
 
-[ $# -ge 2 ] || die "usage: sheepr-send.sh <task-id> <text> [--resolve <key>]"
+[ $# -ge 2 ] || die "usage: sheepr-send.sh <task-id> <text> [--resolve <key>] | --keys <key>... | --budget <tokens>"
 
 ID=$1; shift
 sheepr_validate_id "$ID"
 sheepr_task_exists "$ID" || die "no such task: $ID"
+
+# --- budget mode: record a new budget ----------------------------------------
+
+if [ "$1" = "--budget" ]; then
+  [ $# -eq 2 ] || die "usage: sheepr-send.sh <task-id> --budget <tokens>"
+  [[ $2 =~ ^[1-9][0-9]*$ ]] || die "--budget '$2' must be a positive integer (tokens)"
+  old=$(sheepr_meta_get "$ID" budget) || old=none
+  sheepr_meta_set "$ID" budget "$2"
+  printf 'budget for %s: %s -> %s\n' "$ID" "$old" "$2"
+  exit 0
+fi
 
 KEYS_MODE=0
 if [ "${1:-}" = "--keys" ]; then

@@ -118,12 +118,19 @@ while it waits, and wakes you once per actionable thing:
 - `missing:` there is no agent at a task's endpoint
 - `stalled:` a worker has produced nothing, written nothing, and does not read
   as working
+- `overbudget:` a worker reached its token budget and was interrupted. Its
+  work is kept. Tell the captain what it spent and what is left to do; if they
+  raise it, `./bin/sheepr-send.sh <id> --budget <tokens>`, then send a reply
+  to resume
+- `warning:` a task's budget cannot be enforced; tell the captain once
+
+Read the fold before the pane: it is cheaper, and the status log is the truth.
 
 A `stalled:` wake is a request to look, not a diagnosis. Read the pane before
 you conclude anything:
 
     ./bin/sheepr-status.sh fold <id>
-    herdr agent read sheepr-<id> --source detection --lines 40
+    herdr agent read sheepr-<id> --source detection --lines 20
 
 Never assume a worker has stopped because Herdr says `idle`. It does not mean
 that. Check the status log and the worktree.
@@ -186,7 +193,7 @@ Each refuses rather than guesses. Read the header comment before using one.
 | `bin/sheepr-watch.sh` | the supervision loop, run in the background; `--once` for a single pass |
 | `bin/sheepr-fleet.sh` | read-only view of every worktree, task or not |
 | `bin/sheepr-status.sh` | `fold`, `open`, `append` on a status log |
-| `bin/sheepr-send.sh` | reply to a worker, resolve a key, answer a dialog |
+| `bin/sheepr-send.sh` | reply to a worker, resolve a key, answer a dialog, raise a budget |
 | `bin/sheepr-teardown.sh` | retire a task once its work has landed |
 | `bin/sheepr-test.sh` | run the tests |
 | `bin/sheepr-usage.sh` | a task's tokens, or the supervisor's own (`self`) |

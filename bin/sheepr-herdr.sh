@@ -318,15 +318,63 @@ sheepr_agent_prompt() {  # <name> <text>
 }
 
 # Read rendered pane output. Prints plain text; herdr does not wrap this in
-# JSON. Used for diagnosis only, never to decide state.
+# JSON. Used for diagnosis only, never to decide state. The default is small
+# on purpose: whatever is read lands in the supervisor's context.
 sheepr_agent_read() {  # <name> [lines] [source]
-  herdr agent read "$1" --source "${3:-recent-unwrapped}" --lines "${2:-80}" 2>/dev/null
+  herdr agent read "$1" --source "${3:-recent-unwrapped}" --lines "${2:-20}" 2>/dev/null
 }
 
 # Send a logical key to an agent, for answering a dialog herdr reported as
 # blocked.
 sheepr_agent_send_keys() {  # <name> <key...>
   herdr agent send-keys "$@" >/dev/null 2>&1
+}
+
+# --- interrupt table ----------------------------------------------------------
+#
+# The keys that stop the current turn, per kind. Filled empirically like the
+# launch table: start the kind in a scratch workspace, give it a long turn,
+# send the key, and watch herdr's state. Checked against herdr 0.9.3.
+#
+# claude: esc. Stops the turn ("Interrupted"), state working -> done inside a
+#         second. The composer is left empty. Only one esc: two in a row on an
+#         idle claude open its rewind menu.
+# cursor: esc, then ctrl+u. esc stops the turn (working -> done inside a
+#         second, cursor-agent 2026.10.01), but cursor puts the cancelled
+#         prompt back in the composer, and the next prompt typed there would
+#         be appended to it. ctrl+u empties the composer. The prompt was
+#         already delivered once, so nothing is lost.
+# codex:  esc, codex's own documented interrupt key. NOT yet confirmed here:
+#         the probe machine had no codex-cursor-bridge profile, and running
+#         codex without it spends OpenAI tokens, which the captain has ruled
+#         out. Confirm before relying on it, and record the result here.
+
+sheepr_kind_interrupt_keys() {  # <kind>
+  case "$1" in
+    claude) printf 'esc' ;;
+    cursor) printf 'esc ctrl+u' ;;
+    codex)  printf 'esc' ;;
+    *) return 1 ;;
+  esac
+}
+
+# Stop the agent's current turn. The session, its context and the worktree are
+# kept: this is a pause, never a discard.
+#
+# The kind is read from herdr, not from meta: the keys must fit whatever is
+# actually running in the pane, and herdr is the one that knows.
+#
+# Returns 0 when the keys were sent, 1 when there is no agent to interrupt or
+# its kind has no entry in the table above. An unknown kind gets no keys: a
+# key we have not checked could answer a dialog nobody has read.
+sheepr_agent_interrupt() {  # <name>
+  local kind keys
+  kind=$(sheepr_pane_agent "$1") || return 1
+  keys=$(sheepr_kind_interrupt_keys "$kind") || { warn "no interrupt key known for kind '$kind'"; return 1; }
+  local k
+  for k in $keys; do
+    sheepr_agent_send_keys "$1" "$k" || return 1
+  done
 }
 
 # Submit a prompt and prove it started a turn.

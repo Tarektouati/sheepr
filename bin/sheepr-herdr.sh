@@ -47,10 +47,34 @@ SHEEPR_AGENT_KINDS="cursor claude codex"
 #
 #         SHEEPR_CODEX_PROFILE, when set and non-empty, starts codex under
 #         `-p <profile>`. Unset, codex picks its own profile as before.
+#
+# model:  optional. claude and cursor take `--model <m>`, codex takes `-m <m>`.
+#         codex runs only through codex-cursor-bridge, so its model is a Cursor
+#         model id; bin/sheepr-route.sh checks it against the bridge catalog.
+#         With no model, each harness runs its own default.
 
 # Letters, digits, `-` and `_`, and never a leading `-`: a value codex would
 # read as a flag rather than as the name of a profile is not a profile.
 SHEEPR_CODEX_PROFILE_RE='^[A-Za-z0-9][A-Za-z0-9_-]*$'
+
+# The same rule, plus `.`: model ids such as `composer-2.5` carry a dot. A
+# leading `-` is still refused, because the harness would read it as a flag.
+SHEEPR_MODEL_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+
+sheepr_model_valid() {  # <model>
+  [[ ${1:-} =~ $SHEEPR_MODEL_RE ]]
+}
+
+# The binary each kind runs. A route to a kind whose binary is not installed is
+# refused: there is no fallback to another harness.
+sheepr_kind_bin() {  # <kind>
+  case "$1" in
+    cursor) printf 'cursor-agent' ;;
+    claude) printf 'claude' ;;
+    codex)  printf 'codex' ;;
+    *) return 1 ;;
+  esac
+}
 
 # Fill SHEEPR_KIND_ARGS with the native launch args for <kind>.
 #
@@ -58,12 +82,21 @@ SHEEPR_CODEX_PROFILE_RE='^[A-Za-z0-9][A-Za-z0-9_-]*$'
 # captain chose, and a caller that word-splits a flat string would cut one
 # containing a space into two arguments, the tail of which codex reads as a
 # flag.
-sheepr_kind_args() {  # <kind> [task-dir]
-  local kind=$1 task_dir=${2:-}
+sheepr_kind_args() {  # <kind> [task-dir] [model]
+  local kind=$1 task_dir=${2:-} model=${3:-}
   SHEEPR_KIND_ARGS=()
+  if [ -n "$model" ]; then
+    sheepr_model_valid "$model" || die "model '$model' must match $SHEEPR_MODEL_RE"
+  fi
   case "$kind" in
-    cursor) SHEEPR_KIND_ARGS=(--force --trust) ;;
-    claude) SHEEPR_KIND_ARGS=(--dangerously-skip-permissions) ;;
+    cursor)
+      SHEEPR_KIND_ARGS=(--force --trust)
+      [ -z "$model" ] || SHEEPR_KIND_ARGS+=(--model "$model")
+      ;;
+    claude)
+      SHEEPR_KIND_ARGS=(--dangerously-skip-permissions)
+      [ -z "$model" ] || SHEEPR_KIND_ARGS+=(--model "$model")
+      ;;
     codex)
       SHEEPR_KIND_ARGS=(-s workspace-write -a never)
       if [ -n "$task_dir" ]; then
@@ -74,6 +107,7 @@ sheepr_kind_args() {  # <kind> [task-dir]
           || die "SHEEPR_CODEX_PROFILE must match $SHEEPR_CODEX_PROFILE_RE"
         SHEEPR_KIND_ARGS+=(-p "$SHEEPR_CODEX_PROFILE")
       fi
+      [ -z "$model" ] || SHEEPR_KIND_ARGS+=(-m "$model")
       ;;
     *) return 1 ;;
   esac
@@ -183,12 +217,14 @@ sheepr_workspace_by_label() {  # <label>
 # caller with no task can still start an agent; a codex worker without it
 # cannot write its status log.
 #
+# <model> is optional; empty means the harness's own default.
+#
 # Returns 0 when herdr confirms the agent is interactive, 1 otherwise.
-sheepr_agent_start() {  # <name> <kind> <pane-id> [task-dir]
-  local name=$1 kind=$2 pane=$3 task_dir=${4:-} timeout json code
+sheepr_agent_start() {  # <name> <kind> <pane-id> [task-dir] [model]
+  local name=$1 kind=$2 pane=$3 task_dir=${4:-} model=${5:-} timeout json code
 
   sheepr_kind_valid "$kind" || { warn "unknown agent kind: $kind"; return 1; }
-  sheepr_kind_args "$kind" "$task_dir"
+  sheepr_kind_args "$kind" "$task_dir" "$model"
   timeout=$(sheepr_kind_timeout "$kind")
 
   json=$(herdr agent start "$name" --kind "$kind" --pane "$pane" \

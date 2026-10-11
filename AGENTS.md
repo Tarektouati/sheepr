@@ -63,7 +63,8 @@ from `tasks/` and from the fleet view, never from memory of the conversation.
     ./bin/sheepr-spawn.sh <repo-path> <task-id> \
         --kind <cursor|claude|codex> \
         --delivery <pr|branch|local> \
-        --brief <file>
+        --brief <file> \
+        [--model <id>] [--budget <tokens>] [--route <rule>]
 
 Write the brief to a file first, one file per task: `briefs/<task-id>.md`
 (gitignored), never a shared path you reuse. It should say what to build or
@@ -71,7 +72,16 @@ find out, and any constraint the captain gave. It must not contain
 `{{placeholders}}`; spawn refuses those. Do not write the reporting protocol
 into it, spawn appends that.
 
-Choose the kind the captain asked for. With no preference, use `cursor`.
+Unless the captain named a kind or model, route the task first:
+
+    ./bin/sheepr-route.sh --type <fix|feature|refactor|research|review|docs> \
+        --size <small|medium|large> --risk <low|high> --repo <repo-path>
+
+It prints `<kind> <model> <budget> <rule>`. Pass them to spawn as `--kind`,
+`--model`, `--budget` and `--route`. Whatever the captain named wins over the
+route. When you ask for the delivery mode, state the route in one line, e.g.
+"Routing to claude/claude-sonnet-5-5, 1.5M token budget." If the router
+refuses, report it; never pick a substitute harness.
 
 Task ids are lowercase letters, digits and hyphens, at most 25 characters.
 Prefer a name that says what the work is: `fix-login-flake`, not `task-3`.
@@ -172,6 +182,7 @@ Each refuses rather than guesses. Read the header comment before using one.
 | script | what it does |
 |---|---|
 | `bin/sheepr-spawn.sh` | create a task and start its worker |
+| `bin/sheepr-route.sh` | pick kind, model and budget from the `routes` table |
 | `bin/sheepr-watch.sh` | the supervision loop, run in the background; `--once` for a single pass |
 | `bin/sheepr-fleet.sh` | read-only view of every worktree, task or not |
 | `bin/sheepr-status.sh` | `fold`, `open`, `append` on a status log |

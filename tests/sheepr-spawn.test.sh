@@ -16,7 +16,7 @@ spawn() { "$SHEEPR_ROOT/bin/sheepr-spawn.sh" "$@" 2>&1; }
 # A trailing flag used to leave $# at 1 forever: `shift 2` shifts nothing, and
 # the while loop burned a core until the pane was killed.
 
-for flag in --kind --delivery --brief; do
+for flag in --kind --delivery --brief --model --budget --route; do
   out=$(run_bounded 5 spawn "$SHEEPR_ROOT" t1 "$flag"); rc=$?
   is "$rc" '1' "$flag with no value is refused rather than looping forever"
   case "$out" in *"$flag needs a value"*) ok "the refusal names $flag" ;;
@@ -36,6 +36,34 @@ out=$(run_bounded 5 spawn "$SHEEPR_ROOT" t1 --kind cursor --delivery pr --brief 
 is "$rc" '1' 'a complete line is still refused when the brief file is missing'
 case "$out" in *'brief file not found'*) ok 'and it is refused for the brief, not for the parse' ;;
   *) fail 'and it is refused for the brief, not for the parse' "got: $out" ;; esac
+
+# --- model, budget and route ---------------------------------------------
+#
+# Each is checked before anything touches herdr, so a bad value never leaves a
+# half-made workspace behind. A good value gets past the parser and stops at
+# the missing brief file.
+
+ok_line() { run_bounded 5 spawn "$SHEEPR_ROOT" t1 --kind claude --delivery local \
+  --brief /nonexistent/brief.md "$@"; }
+
+for pair in '--model|-m' '--model|a b' '--model|$(id)' \
+            '--budget|0' '--budget|-5' '--budget|10k' '--budget|1.5' \
+            '--route|-x' '--route|a b'; do
+  flag=${pair%%|*}; val=${pair#*|}
+  out=$(ok_line "$flag" "$val"); rc=$?
+  is "$rc" '1' "$flag '$val' is refused"
+  case "$out" in *"$flag '$val'"*) ok "  and the refusal names $flag" ;;
+    *) fail "  and the refusal names $flag" "got: $out" ;; esac
+done
+
+out=$(ok_line --model claude-opus-5-5 --budget 1500000 --route default); rc=$?
+is "$rc" '1' 'valid --model --budget --route reach the brief check'
+case "$out" in *'brief file not found'*) ok 'and are refused for the brief, not for the flags' ;;
+  *) fail 'and are refused for the brief, not for the flags' "got: $out" ;; esac
+
+out=$(ok_line --model composer-2.5); rc=$?
+case "$out" in *'brief file not found'*) ok 'a model id with a dot is accepted' ;;
+  *) fail 'a model id with a dot is accepted' "got: $out" ;; esac
 
 # --- parallel spawns ---------------------------------------------------------
 #

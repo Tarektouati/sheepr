@@ -1,0 +1,39 @@
+# routes - which harness (kind), model and token budget a task gets.
+#
+# Read by bin/sheepr-route.sh. The captain owns this file: edit it freely.
+# The captain's explicit kind, model or budget always overrides a route.
+#
+# One rule per line, eight columns separated by `|`. Blank lines and anything
+# after `#` are ignored. Rules are tried top to bottom and the FIRST match
+# wins, so put narrow rules above broad ones. Keep a catch-all rule last: a
+# task that matches nothing is refused, never guessed.
+#
+#   name       the rule's name. Printed by the router and recorded in the
+#              task's meta as `route`. Letters, digits, `-` and `_`.
+#   type       fix, feature, refactor, research, review, docs, or `*`.
+#   size       small, medium, large, or `*`.
+#   risk       low, high, or `*`.
+#   repo-glob  a shell glob matched against the repository's absolute path,
+#              e.g. `*/sheepr` or `/Users/me/work/*`. `*` matches any repo.
+#   kind       the harness: cursor, claude or codex. Its binary must be
+#              installed, or the route is refused; there is no fallback.
+#              codex runs only through codex-cursor-bridge: it needs
+#              SHEEPR_CODEX_PROFILE set, and its model must be a Cursor model
+#              id listed in $CODEX_HOME/cursor-bridge-models.json.
+#   model      the model id passed to the harness. claude takes Claude model
+#              ids, cursor and codex take Cursor model ids. Letters, digits,
+#              `.`, `-` and `_`.
+#   budget     the task's default token budget, a positive integer.
+#              `--budget` on spawn overrides it.
+#
+# The defaults are conservative: anything risky or large goes to the
+# strongest model, only small low-risk fixes and docs go to the cheap one.
+
+# name        | type     | size  | risk | repo-glob | kind   | model             | budget
+high-risk     | *        | *     | high | *         | claude | claude-opus-5-5   | 3000000
+large         | *        | large | *    | *         | claude | claude-opus-5-5   | 3000000
+small-docs    | docs     | small | low  | *         | cursor | composer-2.5      | 300000
+small-fix     | fix      | small | low  | *         | cursor | composer-2.5      | 500000
+reading       | research | *     | *    | *         | claude | claude-sonnet-5-5 | 1000000
+review        | review   | *     | *    | *         | claude | claude-sonnet-5-5 | 1000000
+default       | *        | *     | *    | *         | claude | claude-sonnet-5-5 | 1500000

@@ -3,7 +3,13 @@
 #
 # Usage:
 #   sheepr-spawn.sh <repo-path> <task-id> --kind <cursor|claude|codex> \
-#                   --delivery <pr|branch|local> --brief <file>
+#                   --delivery <pr|branch|local> --brief <file> \
+#                   [--model <id>] [--budget <tokens>] [--route <rule-name>]
+#
+# --model, --budget and --route usually come from bin/sheepr-route.sh, unless
+# the captain named their own. --model is passed to the harness; without it the
+# harness runs its own default. --budget is a positive token count and --route
+# the name of the rule that chose them; both are only recorded in meta.
 #
 # Owns: creating the worktree workspace, writing the task metadata and brief,
 # starting the worker, and delivering the doorbell prompt.
@@ -39,7 +45,7 @@ set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sheepr-herdr.sh"
 
 usage() {
-  sed -n '3,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '3,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 2
 }
 
@@ -47,7 +53,7 @@ usage() {
 REPO_ARG=$1; shift
 ID=$1; shift
 
-KIND=''; DELIVERY=''; BRIEF=''
+KIND=''; DELIVERY=''; BRIEF=''; MODEL=''; BUDGET=''; ROUTE=''
 # A flag must carry its value. `shift 2` with one argument left shifts nothing
 # and reports failure, so the loop would spin on the same argument forever.
 while [ $# -gt 0 ]; do
@@ -55,6 +61,9 @@ while [ $# -gt 0 ]; do
     --kind) [ $# -ge 2 ] || die "--kind needs a value"; KIND=$2; shift 2 ;;
     --delivery) [ $# -ge 2 ] || die "--delivery needs a value"; DELIVERY=$2; shift 2 ;;
     --brief) [ $# -ge 2 ] || die "--brief needs a value"; BRIEF=$2; shift 2 ;;
+    --model) [ $# -ge 2 ] || die "--model needs a value"; MODEL=$2; shift 2 ;;
+    --budget) [ $# -ge 2 ] || die "--budget needs a value"; BUDGET=$2; shift 2 ;;
+    --route) [ $# -ge 2 ] || die "--route needs a value"; ROUTE=$2; shift 2 ;;
     -h|--help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -73,6 +82,16 @@ case "$DELIVERY" in
   pr|branch|local) ;;
   *) die "unknown --delivery '$DELIVERY' (pr, branch, or local)" ;;
 esac
+
+if [ -n "$MODEL" ]; then
+  sheepr_model_valid "$MODEL" || die "--model '$MODEL' must match $SHEEPR_MODEL_RE"
+fi
+if [ -n "$BUDGET" ]; then
+  [[ $BUDGET =~ ^[1-9][0-9]*$ ]] || die "--budget '$BUDGET' must be a positive integer (tokens)"
+fi
+if [ -n "$ROUTE" ]; then
+  [[ $ROUTE =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || die "--route '$ROUTE' is not a rule name"
+fi
 
 [ -n "$BRIEF" ] || die "--brief <file> is required"
 [ -f "$BRIEF" ] || die "brief file not found: $BRIEF"
@@ -148,6 +167,9 @@ sheepr_meta_set "$ID" worktree "$WORKTREE"
 sheepr_meta_set "$ID" repo "$REPO"
 sheepr_meta_set "$ID" kind "$KIND"
 sheepr_meta_set "$ID" delivery "$DELIVERY"
+[ -z "$MODEL" ] || sheepr_meta_set "$ID" model "$MODEL"
+[ -z "$BUDGET" ] || sheepr_meta_set "$ID" budget "$BUDGET"
+[ -z "$ROUTE" ] || sheepr_meta_set "$ID" route "$ROUTE"
 sheepr_meta_set "$ID" branch "$BRANCH"
 sheepr_meta_set "$ID" created "$(sheepr_now)"
 
@@ -241,7 +263,7 @@ BRIEF_TAIL
 
 # --- launch -----------------------------------------------------------------
 
-if ! sheepr_agent_start "$NAME" "$KIND" "$PANE" "$TASK_DIR"; then
+if ! sheepr_agent_start "$NAME" "$KIND" "$PANE" "$TASK_DIR" "$MODEL"; then
   warn "worker did not become ready; the workspace is left in place for inspection"
   warn "workspace=$WS pane=$PANE worktree=$WORKTREE"
   exit 1
@@ -258,6 +280,9 @@ esac
 
 printf 'spawned %s\n' "$ID"
 printf '  kind      %s\n' "$KIND"
+printf '  model     %s\n' "${MODEL:-harness default}"
+printf '  budget    %s\n' "${BUDGET:-none}"
+printf '  route     %s\n' "${ROUTE:-none}"
 printf '  delivery  %s\n' "$DELIVERY"
 printf '  branch    %s\n' "$BRANCH"
 printf '  worktree  %s\n' "$WORKTREE"

@@ -149,7 +149,7 @@ is "$(grep -c '' "$STATUS")" '1' 'only the read prompt appended to the log'
 
 is "$(sheepr_kind_interrupt_keys claude)" 'esc' 'claude is interrupted with esc'
 is "$(sheepr_kind_interrupt_keys cursor)" 'esc ctrl+u' 'cursor also has its composer emptied'
-is "$(sheepr_kind_interrupt_keys codex)" 'esc' 'codex is interrupted with esc'
+is "$(sheepr_kind_interrupt_keys codex)" 'esc ctrl+u' 'codex also has its composer emptied'
 sheepr_kind_interrupt_keys nosuchkind >/dev/null
 is "$?" '1' 'a kind with no checked key has none'
 

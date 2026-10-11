@@ -344,16 +344,18 @@ sheepr_agent_send_keys() {  # <name> <key...>
 #         prompt back in the composer, and the next prompt typed there would
 #         be appended to it. ctrl+u empties the composer. The prompt was
 #         already delivered once, so nothing is lost.
-# codex:  esc, codex's own documented interrupt key. NOT yet confirmed here:
-#         the probe machine had no codex-cursor-bridge profile, and running
-#         codex without it spends OpenAI tokens, which the captain has ruled
-#         out. Confirm before relying on it, and record the result here.
+# codex:  esc, then ctrl+u, as for cursor. esc stops the turn ("Conversation
+#         interrupted"), working -> done inside half a second (codex-cli
+#         0.140.0 via codex-cursor-bridge, composer-2.5, herdr 0.9.3). When
+#         esc lands before the prompt is committed to the transcript, codex
+#         puts it back in the composer; ctrl+u empties it. On an idle codex,
+#         esc and ctrl+u both do nothing.
 
 sheepr_kind_interrupt_keys() {  # <kind>
   case "$1" in
     claude) printf 'esc' ;;
     cursor) printf 'esc ctrl+u' ;;
-    codex)  printf 'esc' ;;
+    codex)  printf 'esc ctrl+u' ;;
     *) return 1 ;;
   esac
 }

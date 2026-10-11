@@ -1,0 +1,6 @@
+{"type":"user","message":{"role":"user","content":"go"}}
+{"type":"assistant","message":{"id":"msg_A","model":"m","usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":20,"output_tokens":5}}}
+{"type":"assistant","message":{"id":"msg_A","model":"m","usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":20,"output_tokens":5}}}
+{"type":"assistant","message":{"id":"msg_B","model":"m","usage":{"input_tokens":3,"cache_read_input_tokens":200,"cache_creation_input_tokens":0,"output_tokens":7}}}
+{"type":"assistant","message":{"model":"<synthetic>","usage":{"input_tokens":1,"output_tokens":1}}}
+{"type":"assistant","message":{"id":"msg_X","usag

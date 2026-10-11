@@ -17,6 +17,10 @@
 # is invisible to every other sheepr command - including teardown, which is
 # what protects unlanded work. This is the command that sees them.
 #
+# Usage: each task row carries its tokens, read through bin/sheepr-usage.sh
+# with --read-only so this view still writes nothing; `?` is unknown. The
+# footer gives the total over the tasks shown, and the supervisor's own spend.
+#
 # Three kinds of row:
 #   task    a worktree with a matching task record; shows its folded state
 #   orphan  a linked worktree with no task record; sheepr does not manage it
@@ -61,6 +65,19 @@ repos() {
   done < <(sheepr_task_ids) | sort -u
 }
 
+USAGE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sheepr-usage.sh"
+
+# A task's total tokens, or null when its usage is unknown. A refusal from
+# the usage adapter is unknown too: this view reports, it does not fail.
+task_tokens() {  # <task-id>
+  local line
+  line=$("$USAGE" task "$1" --read-only 2>/dev/null) || line=''
+  case "$line" in
+    [0-9]*) printf '%s' "${line%% *}" ;;
+    *) printf 'null' ;;
+  esac
+}
+
 # --- index sheepr's tasks by worktree path ---------------------------------
 
 TASK_INDEX=$(
@@ -72,7 +89,9 @@ TASK_INDEX=$(
            --arg fold "$(sheepr_status_fold "$id")" \
            --arg delivery "$(sheepr_meta_get "$id" delivery || printf '?')" \
            --arg kind "$(sheepr_meta_get "$id" kind || printf '?')" \
+           --argjson tokens "$(task_tokens "$id")" \
       '{id: $id, worktree: $wt, real: $real, delivery: $delivery, kind: $kind,
+        tokens: $tokens,
         state: ($fold | split("|")[0]), detail: ($fold | split("|")[2:] | join("|"))}'
   done < <(sheepr_task_ids) | jq -sc '.'
 )
@@ -103,6 +122,7 @@ while read -r repo; do
           state: ($t.state // null),
           detail: ($t.detail // null),
           delivery: ($t.delivery // null),
+          tokens: ($t.tokens // null),
           branch: .branch, path: .path,
           dirty: .dirty, ahead: .ahead, behind: .behind, unpushed: .unpushed,
           pr: (if .pr == null then null else "#\(.pr.number) \(.pr.state)" end),
@@ -120,18 +140,31 @@ STALE=$(jq -nc --argjson tasks "$TASK_INDEX" --argjson seen "$SEEN" '
     | select((.real as $r | $seen | index($r)) == null)
     | select((.worktree as $w | $seen | index($w)) == null)
     | { repo: null, kind: "stale", task: .id, state: .state, detail: .detail,
-        delivery: .delivery, branch: null, path: .worktree,
+        delivery: .delivery, tokens: .tokens, branch: null, path: .worktree,
         dirty: null, ahead: null, behind: null, unpushed: null,
         pr: null, agent: null }
   ]')
 
 ALL=$(jq -nc --argjson r "$ROWS" --argjson s "$STALE" '$r + $s')
 
+# The supervisor's own spend: null when unknown, like a task's.
+SELF=$("$USAGE" self 2>/dev/null) || SELF=''
+case "$SELF" in [0-9]*) SELF=${SELF%% *} ;; *) SELF=null ;; esac
+
+# Over the task and stale rows shown: an orphan has no harness sheepr knows.
+USAGE_SUMMARY=$(printf '%s' "$ALL" | jq -c --argjson self "$SELF" '
+  [.[] | select(.kind != "orphan")] as $t
+  | { fleet_total: ([$t[] | .tokens | numbers] | add // 0),
+      measured: ([$t[] | .tokens | numbers] | length),
+      unknown: ([$t[] | select(.tokens == null)] | length),
+      supervisor: $self }')
+
 if [ "$JSON" = 1 ]; then
-  printf '%s\n' "$ALL" | jq '{
+  printf '%s\n' "$ALL" | jq --argjson usage "$USAGE_SUMMARY" '{
     tasks:   [.[] | select(.kind == "task")],
     orphans: [.[] | select(.kind == "orphan")],
     stale:   [.[] | select(.kind == "stale")],
+    usage:   $usage,
     all: .
   }'
   exit 0
@@ -146,19 +179,33 @@ if [ "$count" = 0 ]; then
 fi
 
 printf '%s' "$ALL" | jq -r '
-  (["TASK","STATE","AGENT","BRANCH","DIRTY","AHEAD","PR","PATH"] | @tsv),
+  def human: if . == null then "?"
+             elif . >= 1000000 then "\((. / 100000 | floor) / 10)M"
+             elif . >= 1000 then "\((. / 100 | floor) / 10)k"
+             else tostring end;
+  (["TASK","STATE","AGENT","TOKENS","BRANCH","DIRTY","AHEAD","PR","PATH"] | @tsv),
   (.[] | [
      (if .kind == "orphan" then "(orphan)"
       elif .kind == "stale" then "\(.task) (stale)"
       else .task end),
      (.state // "-"),
      (.agent // "-"),
+     (if .kind == "orphan" then "-" else (.tokens | human) end),
      (.branch // "-"),
      (.dirty | if . == null then "?" else tostring end),
      (.ahead | if . == null then "?" else tostring end),
      (.pr // "-"),
      .path
    ] | @tsv)' | column -t -s "$(printf '\t')"
+
+printf '%s' "$USAGE_SUMMARY" | jq -r '
+  def human: if . == null then "?"
+             elif . >= 1000000 then "\((. / 100000 | floor) / 10)M"
+             elif . >= 1000 then "\((. / 100 | floor) / 10)k"
+             else tostring end;
+  "\ntokens: fleet \(.fleet_total | human) over \(.measured) task(s)"
+  + (if .unknown > 0 then ", \(.unknown) unknown" else "" end)
+  + "; supervisor \(.supervisor | human)"'
 
 orphans=$(printf '%s' "$ALL" | jq '[.[] | select(.kind == "orphan")] | length')
 stale=$(printf '%s' "$ALL" | jq '[.[] | select(.kind == "stale")] | length')

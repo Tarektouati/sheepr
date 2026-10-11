@@ -28,15 +28,17 @@
 #              input plus output tokens: cache reads and cache creation do
 #              not count toward a budget. At or over it, the watcher
 #              interrupts the worker and wakes the supervisor.
+#              Reference: three medium feature tasks in this repo, run by
+#              claude workers, spent 24k-35k each by this measure.
 #
 # The defaults are conservative: anything risky or large goes to the
 # strongest model, only small low-risk fixes and docs go to the cheap one.
 
 # name        | type     | size  | risk | repo-glob | kind   | model             | budget
-high-risk     | *        | *     | high | *         | claude | claude-opus-5-5   | 3000000
-large         | *        | large | *    | *         | claude | claude-opus-5-5   | 3000000
-small-docs    | docs     | small | low  | *         | cursor | composer-2.5      | 300000
-small-fix     | fix      | small | low  | *         | cursor | composer-2.5      | 500000
-reading       | research | *     | *    | *         | claude | claude-sonnet-5-5 | 1000000
-review        | review   | *     | *    | *         | claude | claude-sonnet-5-5 | 1000000
-default       | *        | *     | *    | *         | claude | claude-sonnet-5-5 | 1500000
+high-risk     | *        | *     | high | *         | claude | claude-opus-5-5   | 150000
+large         | *        | large | *    | *         | claude | claude-opus-5-5   | 150000
+small-docs    | docs     | small | low  | *         | cursor | composer-2.5      | 50000
+small-fix     | fix      | small | low  | *         | cursor | composer-2.5      | 75000
+reading       | research | *     | *    | *         | claude | claude-sonnet-5-5 | 100000
+review        | review   | *     | *    | *         | claude | claude-sonnet-5-5 | 100000
+default       | *        | *     | *    | *         | claude | claude-sonnet-5-5 | 100000

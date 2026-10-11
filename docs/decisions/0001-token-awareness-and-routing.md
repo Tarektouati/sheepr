@@ -1,7 +1,8 @@
 # 0001 - Token awareness and a router
 
-Status: accepted, not yet built.
+Status: accepted, built.
 Date: 2026-10-10.
+Built: 2026-10-11.
 
 ## Why
 

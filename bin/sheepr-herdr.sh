@@ -134,22 +134,47 @@ sheepr_kind_args() {  # <kind> [task-dir] [model]
 
 # Fill SHEEPR_KIND_ARGS with the launch args for a REVIEWER of <kind>.
 #
-# A reviewer must not change the worktree. claude can be held to that by the
-# harness: --permission-mode plan, and never --dangerously-skip-permissions,
-# which would override it. cursor and codex have no mode that was checked to
-# hold them read-only, so they start with their normal worker permissions and
-# the review prompt forbids edits.
+# A reviewer must not change the worktree, and each kind is held to that by
+# its own harness, not only by the prompt:
+#
+# claude: --permission-mode plan, and never --dangerously-skip-permissions,
+#         which would override it. Reaches "plan mode on" (claude 2.1.325).
+# cursor: --trust --mode plan, and never --force. Plan mode is cursor's
+#         read-only mode: checked live (cursor-agent 2026.11.13, herdr 0.9.5),
+#         asked to create a file it declined and said plan mode only lets it
+#         edit markdown files; no file was written. --trust is still needed
+#         for the trust dialog herdr reports as idle (see the worker table).
+#         It may still write a markdown plan file, which the prompt forbids.
+# codex:  -s read-only -a never. Checked with `codex sandbox -c
+#         sandbox_mode="read-only"` (codex-cli 0.140.0): reads succeed, a
+#         write in the worktree is refused ("Operation not permitted"). NOT
+#         checked: a full codex TUI reviewer through codex-cursor-bridge, as
+#         no bridge profile was configured on the machine that verified it.
+#         No --add-dir: a reviewer writes no status log, so it needs no
+#         directory outside the worktree.
 sheepr_reviewer_args() {  # <kind> [model]
   local kind=$1 model=${2:-}
+  if [ -n "$model" ]; then
+    sheepr_model_valid "$model" || die "model '$model' must match $SHEEPR_MODEL_RE"
+  fi
   case "$kind" in
     claude)
-      if [ -n "$model" ]; then
-        sheepr_model_valid "$model" || die "model '$model' must match $SHEEPR_MODEL_RE"
-      fi
       SHEEPR_KIND_ARGS=(--permission-mode plan)
       [ -z "$model" ] || SHEEPR_KIND_ARGS+=(--model "$model")
       ;;
-    cursor|codex) sheepr_kind_args "$kind" '' "$model" ;;
+    cursor)
+      SHEEPR_KIND_ARGS=(--trust --mode plan)
+      [ -z "$model" ] || SHEEPR_KIND_ARGS+=(--model "$model")
+      ;;
+    codex)
+      SHEEPR_KIND_ARGS=(-s read-only -a never)
+      if [ -n "${SHEEPR_CODEX_PROFILE:-}" ]; then
+        [[ $SHEEPR_CODEX_PROFILE =~ $SHEEPR_CODEX_PROFILE_RE ]] \
+          || die "SHEEPR_CODEX_PROFILE must match $SHEEPR_CODEX_PROFILE_RE"
+        SHEEPR_KIND_ARGS+=(-p "$SHEEPR_CODEX_PROFILE")
+      fi
+      [ -z "$model" ] || SHEEPR_KIND_ARGS+=(-m "$model")
+      ;;
     *) return 1 ;;
   esac
 }

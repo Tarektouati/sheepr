@@ -6,10 +6,19 @@
 #   sheepr-send.sh <task-id> --keys <key> [<key>...]
 #   sheepr-send.sh <task-id> --budget <tokens>
 #   sheepr-send.sh <task-id> --reopen <fix-brief>
+#   sheepr-send.sh <task-id> --reviewer <text> | --keys <key>... | --budget <tokens>
 #
 # Owns: delivering the supervisor's reply to a running worker, closing the
 # question or blocker that reply answers, raising a task's budget, and
 # reopening a finished task on a fix plan.
+#
+# --reviewer aims the reply, the keys or the budget at the task's open
+# review instead of its worker: the text or keys go to the reviewer agent
+# (meta review_name), and --budget records review_budget. The watcher wakes
+# the reviewer's `overbudget:` once per review budget, so a raised one
+# re-arms it; raise it, then send the reviewer a reply to resume it. A
+# reviewer has no status log, so nothing is appended and --resolve is
+# refused.
 #
 # --reopen appends `reopened|<epoch>|reopen-<n>|<first line of the plan>` to
 # the status log, which folds the task back to working, then copies the plan
@@ -31,6 +40,8 @@
 #     reopened, and a worker still running needs a reply, not a plan.
 #   - to --reopen while a review is open: the findings come in first
 #     (bin/sheepr-review.sh collect), then the plan is drafted from them.
+#   - --reviewer when no review is open on the task, and --reviewer with
+#     --resolve or --reopen: those belong to the worker's status log.
 #   - to --reopen with a plan file that is missing, empty or still holds a
 #     {{placeholder}}.
 #
@@ -51,14 +62,25 @@ ID=$1; shift
 sheepr_validate_id "$ID"
 sheepr_task_exists "$ID" || die "no such task: $ID"
 
+ROLE=worker
+if [ "$1" = "--reviewer" ]; then
+  ROLE=reviewer; shift
+  [ $# -ge 1 ] || die "usage: sheepr-send.sh <task-id> --reviewer <text> | --keys <key>... | --budget <tokens>"
+  sheepr_review_open "$ID" || die "no review is open on $ID, so there is no reviewer to send to"
+  case "$1" in --reopen|--resolve) die "$1 belongs to the worker, not the reviewer" ;; esac
+  for a in "$@"; do [ "$a" != --resolve ] || die "--resolve belongs to the worker, not the reviewer: a reviewer has no status log"; done
+fi
+
 # --- budget mode: record a new budget ----------------------------------------
 
 if [ "$1" = "--budget" ]; then
   [ $# -eq 2 ] || die "usage: sheepr-send.sh <task-id> --budget <tokens>"
   [[ $2 =~ ^[1-9][0-9]*$ ]] || die "--budget '$2' must be a positive integer (tokens)"
-  old=$(sheepr_meta_get "$ID" budget) || old=none
-  sheepr_meta_set "$ID" budget "$2"
-  printf 'budget for %s: %s -> %s\n' "$ID" "$old" "$2"
+  BKEY=budget; WHO=''
+  [ "$ROLE" = reviewer ] && { BKEY=review_budget; WHO='reviewer '; }
+  old=$(sheepr_meta_get "$ID" "$BKEY") || old=''
+  sheepr_meta_set "$ID" "$BKEY" "$2"
+  printf '%sbudget for %s: %s -> %s\n' "$WHO" "$ID" "${old:-none}" "$2"
   exit 0
 fi
 
@@ -139,13 +161,21 @@ if [ -n "$RESOLVE" ] && ! sheepr_status_open_keys "$ID" | grep -qxF "$RESOLVE"; 
 fi
 
 sheepr_herdr_require
-NAME=$(sheepr_meta_get "$ID" name) || NAME="sheepr-$ID"
+if [ "$ROLE" = reviewer ]; then
+  NAME=$(sheepr_meta_get "$ID" review_name) || NAME="rv-$ID"
+  STATUS_FOR_PROMPT=''
+  DEST="the reviewer of $ID"
+else
+  DEST=$ID
+  NAME=$(sheepr_meta_get "$ID" name) || NAME="sheepr-$ID"
+  STATUS_FOR_PROMPT=$(sheepr_status_file "$ID")
+fi
 
 # --- key mode: answer a dialog ---------------------------------------------
 
 if [ "$KEYS_MODE" = 1 ]; then
   sheepr_agent_send_keys "$NAME" "$@" || die "could not send keys to $ID"
-  printf 'sent keys to %s: %s\n' "$ID" "$*"
+  printf 'sent keys to %s: %s\n' "$DEST" "$*"
   # The same reason as at the foot of this file, and it bites harder here: the
   # worker's next dialog carries the same wake signature as the one just
   # answered, so a stale .woke absorbs it and the supervisor is never told the
@@ -167,9 +197,9 @@ fi
 
 # --- deliver ----------------------------------------------------------------
 
-sheepr_agent_prompt_verified "$NAME" "$TEXT" "$(sheepr_status_file "$ID")"
+sheepr_agent_prompt_verified "$NAME" "$TEXT" "$STATUS_FOR_PROMPT"
 case $? in
-  0) printf 'delivered to %s\n' "$ID" ;;
+  0) printf 'delivered to %s\n' "$DEST" ;;
   3) die "worker $ID is parked at a dialog; use --keys to answer it" ;;
   4) die "the reply was submitted to $ID but it never started a turn" ;;
   *) die "could not deliver to $ID" ;;

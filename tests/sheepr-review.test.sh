@@ -55,23 +55,39 @@ case "$1 $2" in
   *) printf '{"result":{"type":"ok"}}\n' ;;
 esac
 EOF
+# The fake gh. $FAKE/head is the PR's head commit, $FAKE/gh-comments and
+# $FAKE/gh-reviews your existing comments and review bodies, $FAKE/diff the
+# PR's diff. Each POSTed payload is kept as $FAKE/payload-<n>. A POST fails
+# while $FAKE/post-fail-<n> exists (n counts from 1), printing its content
+# as GitHub's error body.
 cat >"$FAKE/gh" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"$FAKE/gh-calls"
+head=$(cat "$FAKE/head" 2>/dev/null || echo abc123)
 case "$*" in
-  "pr view"*) printf '{"headRefOid":"abc123","author":{"login":"someone"}}\n' ;;
+  "pr view"*"-q .headRefOid"*) printf '%s\n' "$head" ;;
+  "pr view"*) printf '{"headRefOid":"%s","author":{"login":"%s"}}\n' "$head" "$(cat "$FAKE/author" 2>/dev/null || echo someone)" ;;
   "api user"*) printf 'me\n' ;;
   "pr diff"*) cat "$FAKE/diff" ;;
-  *"/comments --paginate"*) printf '[{"path":"src/a.ts","side":"RIGHT","line":3,"body":"**Suggestion:** Use the helper."}]\n' ;;
-  *"/reviews --paginate"*) printf '[]\n' ;;
-  *"-X POST"*) printf '{"html_url":"https://github.com/o/r/pull/5#pullrequestreview-1"}\n' ;;
+  *"/comments --paginate"*) cat "$FAKE/gh-comments" 2>/dev/null || printf '[]\n' ;;
+  *"/reviews --paginate"*) cat "$FAKE/gh-reviews" 2>/dev/null || printf '[]\n' ;;
+  *"-X POST"*)
+    n=$(( $(ls "$FAKE" | grep -c '^payload-') + 1 ))
+    while [ $# -gt 0 ]; do [ "$1" = --input ] && cp "$2" "$FAKE/payload-$n"; shift; done
+    if [ -f "$FAKE/post-fail-$n" ]; then
+      cat "$FAKE/post-fail-$n"; echo 'gh: Unprocessable Entity (HTTP 422)' >&2; exit 1
+    fi
+    printf '{"html_url":"https://github.com/o/r/pull/5#pullrequestreview-%s"}\n' "$n" ;;
   *) exit 1 ;;
 esac
 EOF
+printf '[{"path":"src/a.ts","side":"RIGHT","line":3,"body":"**Suggestion:** Use the helper."}]\n' >"$FAKE/gh-comments"
 chmod +x "$FAKE/herdr" "$FAKE/gh"
 PATH="$FAKE:$PATH"
 HERDR_ENV=1
-export PATH HERDR_ENV
+# The fake reviewer has no session until a test gives it one.
+SHEEPR_REVIEW_SESSION_WAIT=1
+export PATH HERDR_ENV SHEEPR_REVIEW_SESSION_WAIT
 trap 'rm -rf "$FAKE"; cleanup_home' EXIT
 
 agent() {  # <name> <state> [session]
@@ -248,6 +264,90 @@ is "$rc" '0' 'post --yes posts'
 grep -q -- '-X POST' "$FAKE/gh-calls" && ok 'with gh' || fail 'with gh'
 case "$out" in *'posted: https://github.com/o/r/pull/5#pullrequestreview-1'*) ok 'and prints the review URL' ;;
   *) fail 'and prints the review URL' "got: $out" ;; esac
+rm -f "$FAKE"/payload-*
+
+# post_review <review.md body> <selection> [--yes]: a fresh collected review
+# of r1 holding the given findings.
+post_review() {
+  printf '<!-- sheepr review -->\nReviewing PR #5\n\n%s\n' "$1" >"$SHEEPR_TASKS/r1/review.md"
+  shift
+  rm -f "$FAKE"/payload-* "$FAKE"/post-fail-*
+  : >"$FAKE/gh-calls"
+  review post r1 "$@"
+}
+
+# --- anchoring: LEFT, ranges, and `--`/`++` content lines --------------------
+
+cat >"$FAKE/diff" <<'DIFF'
+diff --git a/q.sql b/q.sql
+--- a/q.sql
++++ b/q.sql
+@@ -1,4 +1,4 @@
+ select 1;
+--- an old SQL comment
++++ an added line
+ select 2;
+ select 3;
+DIFF
+is "$(bash -c '. "$1"/bin/sheepr-review.sh; anchorable_lines' _ "$SHEEPR_ROOT" <"$FAKE/diff" | tr '\t\n' ' ;')" \
+  'q.sql RIGHT 1;q.sql LEFT 2;q.sql RIGHT 2;q.sql RIGHT 3;q.sql RIGHT 4;' \
+  'a removed `-- ` line and an added `++ ` line are content, not file headers'
+out=$(post_review "$(printf '1. q.sql:-2\n   Important: the comment held the query plan.\n\n2. q.sql:3-4\n   Suggestion: merge these two selects.\n\n3. q.sql:5\n   Hint: past the hunk.')" all --yes); rc=$?
+is "$rc" '0' 'a review with LEFT and range anchors posts'
+is "$(jq -c '[.comments[] | {path, line, side, start_line}]' "$FAKE/payload-1")" \
+  '[{"path":"q.sql","line":2,"side":"LEFT","start_line":null},{"path":"q.sql","line":4,"side":"RIGHT","start_line":3}]' \
+  'a removed line anchors LEFT, and a range anchors from start_line to line'
+is "$(jq -r '.comments[1].start_side' "$FAKE/payload-1")" 'RIGHT' 'a range carries its start_side'
+case "$(jq -r .body "$FAKE/payload-1")" in *'`q.sql:5` **Hint:** past the hunk.'*) ok 'a line past the hunk moves into the body' ;;
+  *) fail 'a line past the hunk moves into the body' "got: $(jq -r .body "$FAKE/payload-1")" ;; esac
+
+# --- duplicates: inline comments and review-body lines ------------------------
+
+printf 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,3 @@\n a\n+b\n+c\n' >"$FAKE/diff"
+printf '[{"path":"src/a.ts","side":"RIGHT","line":3,"body":"**Suggestion:** Use the helper!"},{"path":"src/a.ts","side":"RIGHT","line":2,"body":"**Hint:** Unrelated."}]\n' >"$FAKE/gh-comments"
+printf '["OK to merge\\n\\n- `src/z.ts:9` **Remark:** The old path stays."]\n' >"$FAKE/gh-reviews"
+out=$(post_review "$(printf '1. src/a.ts:3\n   Suggestion: use the helper\n\n2. src/z.ts:9\n   Remark: The old path stays.\n\n3. src/a.ts:2\n   Suggestion: rename b.')" all); rc=$?
+case "$out" in *'duplicates of your existing comments: 1, 2'*) ok 'an inline duplicate and a review-body duplicate are both skipped' ;;
+  *) fail 'an inline duplicate and a review-body duplicate are both skipped' "got: $out" ;; esac
+case "$out" in *'src/a.ts:2  **Suggestion:** rename b.'*) ok 'a different label on a commented line is not a duplicate' ;;
+  *) fail 'a different label on a commented line is not a duplicate' "got: $out" ;; esac
+printf '[]\n' >"$FAKE/gh-comments"; printf '[]\n' >"$FAKE/gh-reviews"
+
+# --- the APPROVE fallback, and only for a refused approval ----------------------
+
+FINDING="$(printf '1. src/a.ts:3\n   Suggestion: use the helper.')"
+printf 'me' >"$FAKE/author"
+rm -f "$FAKE"/payload-*
+printf '{"message":"Unprocessable Entity","errors":["Review Can not approve your own pull request"]}\n' >"$FAKE/post-fail-1"
+printf '<!-- sheepr review -->\nReviewing PR #5\n\n%s\n' "$FINDING" >"$SHEEPR_TASKS/r1/review.md"
+: >"$FAKE/gh-calls"
+out=$(review post r1 1 --yes); rc=$?
+is "$rc" '0' 'a refused approval falls back to a comment'
+is "$(jq -r .event "$FAKE/payload-1")/$(jq -r .event "$FAKE/payload-2")" 'APPROVE/COMMENT' 'APPROVE first, then COMMENT'
+case "$(jq -r .body "$FAKE/payload-2")" in *'Approval was not possible (Review Can not approve your own pull request'*'LGTM'*) ok 'the fallback body says why, and LGTM' ;;
+  *) fail 'the fallback body says why, and LGTM' "got: $(jq -r .body "$FAKE/payload-2")" ;; esac
+
+rm -f "$FAKE"/payload-*
+printf '{"message":"Unprocessable Entity","errors":["Pull request review thread line must be part of the diff"]}\n' >"$FAKE/post-fail-1"
+: >"$FAKE/gh-calls"
+out=$(review post r1 1 --yes); rc=$?
+is "$rc" '1' 'an anchor error on an APPROVE is a failure'
+is "$(grep -c -- '-X POST' "$FAKE/gh-calls")" '1' 'and nothing is re-sent as LGTM'
+case "$out" in *'line must be part of the diff'*'nothing was posted'*) ok 'the failure is reported as it is' ;;
+  *) fail 'the failure is reported as it is' "got: $out" ;; esac
+rm -f "$FAKE"/post-fail-* "$FAKE/author"
+
+# --- the head moved -----------------------------------------------------------
+
+printf 'def456' >"$FAKE/head"
+: >"$FAKE/gh-calls"
+out=$(review post r1 1); rc=$?
+is "$rc" '1' 'post refuses when the PR head moved since the review'
+case "$out" in *'moved from abc123 to def456'*'re-run the review or abandon it'*) ok 'and says the head moved' ;;
+  *) fail 'and says the head moved' "got: $out" ;; esac
+grep -q -- '-X POST' "$FAKE/gh-calls" && fail 'and posts nothing' || ok 'and posts nothing'
+rm -f "$FAKE/head"
+is "$(sheepr_meta_get r1 review_head)" 'abc123' 'start recorded the PR head as review_head'
 
 d2=$(mktask r3 local)
 printf 'done|2||committed\n' >>"$d2/status"
@@ -288,6 +388,67 @@ rm -f "$FAKE/pane-w1:p9" "$FAKE/state-rv-b1"
 sheepr_meta_set b1 review_budget ''
 out=$(pass_once); rc=$?
 is "$out" 'missing: b1 - no reviewer at the recorded pane' 'a reviewer pane that is gone wakes missing:'
+
+# --- the reviewer budget re-arms, and send --reviewer -----------------------
+
+sheepr_meta_set b1 review_budget 30
+d=$SHEEPR_TASKS/b1
+agent rv-b1 working s1
+printf 'working on it\n' >"$FAKE/pane-w1:p9"
+is "$(send b1 --reviewer --budget 100)" 'reviewer budget for b1: 30 -> 100' 'send --reviewer --budget records review_budget'
+is "$(sheepr_meta_get b1 budget)" '' "and leaves the worker's budget alone"
+pass_once >/dev/null; rc=$?
+is "$rc" '1' 'under the raised review budget the reviewer is quiet'
+send b1 --reviewer --budget 33 >/dev/null
+is "$(pass_once)" 'overbudget: b1 reviewer 33/33' 'a new review budget, crossed again, wakes again'
+
+: >"$FAKE/calls"
+out=$(send b1 --reviewer 'go on, the budget is raised'); rc=$?
+is "$rc" '0' 'send --reviewer delivers'
+grep -q '^agent prompt rv-b1 go on' "$FAKE/calls" && ok 'send --reviewer delivers a reply to the reviewer' \
+  || fail 'send --reviewer delivers a reply to the reviewer' "$out $(cat "$FAKE/calls")"
+grep -q '^agent prompt sheepr-b1' "$FAKE/calls" && fail 'and not to the worker' || ok 'and not to the worker'
+out=$(send b1 --reviewer --keys down enter); rc=$?
+is "$rc" '0' 'send --reviewer --keys succeeds'
+grep -q '^agent send-keys rv-b1 down enter' "$FAKE/calls" && ok 'and the keys reach the reviewer' \
+  || fail 'and the keys reach the reviewer' "$(cat "$FAKE/calls")"
+out=$(send b1 --reviewer 'x' --resolve default); rc=$?
+is "$rc" '1' 'send --reviewer refuses --resolve'
+
+# --- abandon -------------------------------------------------------------------
+
+out=$(review collect b1); rc=$?
+is "$rc" '1' 'a reviewer stopped at its budget cannot be collected'
+out=$(review abandon b1); rc=$?
+is "$rc" '0' 'but it can be abandoned'
+grep -q '^ABANDONED' "$d/review.md" && grep -q 'working on it' "$d/review.md" \
+  && ok 'abandon saves what the pane held, marked abandoned' || fail 'abandon saves what the pane held, marked abandoned' "$(cat "$d/review.md")"
+[ -f "$FAKE/pane-w1:p9" ] && fail 'abandon closes the reviewer pane' || ok 'abandon closes the reviewer pane'
+[ -n "$(sheepr_meta_get b1 review_abandoned)" ] && [ -n "$(sheepr_meta_get b1 review_done)" ] \
+  && ok 'abandon records review_done and review_abandoned' || fail 'abandon records review_done and review_abandoned'
+sheepr_review_open b1 && fail 'the abandoned review is closed' || ok 'the abandoned review is closed'
+out=$(review post b1 1); rc=$?
+is "$rc" '1' 'an abandoned review cannot be posted'
+out=$(send b1 --reviewer --budget 5); rc=$?
+is "$rc" '1' 'send --reviewer refuses once no review is open'
+
+# A reviewer whose pane is gone: abandon notes that it was unreadable.
+agent sheepr-b1 idle
+review start b1 --kind claude >/dev/null
+rm -f "$FAKE/pane-w1:p9"
+out=$(review abandon b1); rc=$?
+is "$rc" '0' 'a review whose pane is gone can be abandoned'
+grep -q 'could not be read' "$d/review.md" && ok 'and review.md says the pane was unreadable' \
+  || fail 'and review.md says the pane was unreadable' "$(cat "$d/review.md")"
+out=$(review start b1 --kind claude); rc=$?
+is "$rc" '0' 'after abandon a new review can start'
+is "$(sheepr_meta_get b1 review_abandoned)" '' 'and it is not marked abandoned'
+
+# --- the reviewer is read-only in every harness ---------------------------------
+
+sheepr_reviewer_args codex '' && is "${SHEEPR_KIND_ARGS[*]}" '-s read-only -a never' 'a codex reviewer runs in the read-only sandbox'
+sheepr_reviewer_args cursor composer-2.5 && is "${SHEEPR_KIND_ARGS[*]}" '--trust --mode plan --model composer-2.5' 'a cursor reviewer runs in plan mode, never --force'
+sheepr_reviewer_args claude '' && is "${SHEEPR_KIND_ARGS[*]}" '--permission-mode plan' 'a claude reviewer runs in plan permission mode'
 
 # --- reopened -------------------------------------------------------------------
 

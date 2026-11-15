@@ -80,6 +80,39 @@ sheepr_meta_set() {  # <task-id> <key> <value>
   mv -f "$tmp" "$f"
 }
 
+# --- the review -------------------------------------------------------------
+
+# A review is open from `sheepr-review.sh start` until `collect` records
+# review_done. Each start clears review_done, so an earlier review that was
+# collected does not count.
+sheepr_review_open() {  # <task-id>
+  local started done_at
+  started=$(sheepr_meta_get "$1" review_started) || return 1
+  [ -n "$started" ] || return 1
+  done_at=$(sheepr_meta_get "$1" review_done) || done_at=''
+  [ -z "$done_at" ]
+}
+
+# The reviewer brackets its findings between two marker lines, BEGIN before
+# and DONE (the sentinel) after, each carrying the review's nonce. The prompt
+# describes them in parts and never holds either whole, so the echo of the
+# prompt in the pane cannot be mistaken for the reviewer's own line.
+sheepr_review_marker() {  # <BEGIN|DONE> <nonce>
+  printf 'SHEEPR-REVIEW-%s-%s' "$1" "$2"
+}
+
+# Print the 1-based number of the LAST line of <text> that is exactly
+# <marker>, once a harness's leading bullet and whitespace and any trailing
+# whitespace are set aside. Return 1 when there is none.
+sheepr_marker_line() {  # <text> <marker>
+  printf '%s\n' "$1" | awk -v m="$2" '
+    { t = $0
+      sub(/[[:space:]]+$/, "", t)
+      sub(/^[^A-Za-z0-9]*/, "", t)
+      if (t == m) last = NR }
+    END { if (last) { print last; exit 0 } exit 1 }'
+}
+
 # --- locking ----------------------------------------------------------------
 
 # A lock is a directory plus a pid file. mkdir is atomic on every filesystem we

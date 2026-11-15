@@ -20,6 +20,10 @@
 #     guessing how finished work reaches a human is never recoverable.
 #   - when the brief still contains a {{placeholder}}.
 #   - when the task id is already in use, including by a spawn still running.
+#   - when flock is missing or cannot read the repository. Spawn records the
+#     base branch flock detects as `base` in meta (origin/<base> when the
+#     remote has it), so a later review diffs the branch against it without
+#     asking. A base sheepr guessed would review the wrong diff.
 #
 # Safe to run several at once. The --brief file is read exactly once, into a
 # snapshot, so a caller reusing one path for the next brief cannot swap the
@@ -43,6 +47,8 @@ set -uo pipefail
 
 # shellcheck source=bin/sheepr-herdr.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sheepr-herdr.sh"
+# shellcheck source=bin/sheepr-flock.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sheepr-flock.sh"
 
 usage() {
   sed -n '3,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -124,7 +130,13 @@ REPO=$(cd "$REPO_ARG" 2>/dev/null && pwd) || die "repo path not found: $REPO_ARG
 git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository: $REPO"
 
 sheepr_herdr_require
+sheepr_flock_require
 sheepr_ensure_home
+
+FLOCK_JSON=$(sheepr_flock_status "$REPO") \
+  || die "flock could not read $REPO, so its base branch is unknown"
+BASE=$(printf '%s' "$FLOCK_JSON" | jq -r '.base_ref // .base // empty' 2>/dev/null)
+[ -n "$BASE" ] || die "flock reported no base branch for $REPO"
 
 # --- claim the id -----------------------------------------------------------
 #
@@ -171,6 +183,7 @@ sheepr_meta_set "$ID" delivery "$DELIVERY"
 [ -z "$BUDGET" ] || sheepr_meta_set "$ID" budget "$BUDGET"
 [ -z "$ROUTE" ] || sheepr_meta_set "$ID" route "$ROUTE"
 sheepr_meta_set "$ID" branch "$BRANCH"
+sheepr_meta_set "$ID" base "$BASE"
 sheepr_meta_set "$ID" created "$(sheepr_now)"
 
 # --- the brief --------------------------------------------------------------
@@ -285,6 +298,7 @@ printf '  budget    %s\n' "${BUDGET:-none}"
 printf '  route     %s\n' "${ROUTE:-none}"
 printf '  delivery  %s\n' "$DELIVERY"
 printf '  branch    %s\n' "$BRANCH"
+printf '  base      %s\n' "$BASE"
 printf '  worktree  %s\n' "$WORKTREE"
 printf '  workspace %s (pane %s)\n' "$WS" "$PANE"
 printf '  status    %s\n' "$STATUS"

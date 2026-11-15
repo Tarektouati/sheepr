@@ -33,11 +33,21 @@
 #     `working` is positive evidence of life; everything else must be
 #     corroborated by the status log or by file writes in the worktree.
 #   - to wake twice for the same thing. Each wake records a signature; an
-#     unchanged signature is absorbed to the triage log instead.
+#     unchanged signature is absorbed to the triage log instead. A done is
+#     also remembered in .done-woke, so a review's wakes in between do not
+#     bring it round again; a reopened task forgets it.
 #   - to discard work over a budget. Crossing it interrupts the current turn;
 #     the session, the worktree and the status log are all kept.
 #
 # The decision ladder, per task, first match wins:
+#
+#   0. A review is open (bin/sheepr-review.sh start) and the fold is done:
+#      the review's own ladder runs instead, see inspect_review. It reads the
+#      reviewer pane through the Herdr adapter and wakes `reviewed: <id>` on
+#      the sentinel. This is the one place the watcher reads a terminal to
+#      decide anything; the reviewer writes no status log. Without the
+#      sentinel it applies the reviewer's budget, `missing:`, `blocked:` and
+#      the usual `stalled:` rules.
 #
 #   1. Budget, when meta has one and the log is not done or failed. Read the
 #      usage with bin/sheepr-usage.sh. Spent is input + output: fresh input
@@ -143,85 +153,181 @@ excerpt() {  # <text>
   printf '%s' "$t"
 }
 
-# The usage adapter's one-line answer for a task. A function so the tests can
-# put their own answer in its place.
-task_usage() {  # <task-id>
-  bash "$SHEEPR_ROOT/bin/sheepr-usage.sh" task "$1" 2>/dev/null
+# The usage adapter's one-line answer for a task's worker, or with <mode>
+# `review`, for its reviewer. A function so the tests can put their own
+# answer in its place.
+task_usage() {  # <task-id> [task|review]
+  bash "$SHEEPR_ROOT/bin/sheepr-usage.sh" "${2:-task}" "$1" 2>/dev/null
 }
 
-# Ladder step 1. Print "<signature>\t<reason>" and return 0 when the budget
-# needs the supervisor, return 1 when it does not.
+# Ladder step 1, and the review's own budget step. Print
+# "<signature>\t<reason>" and return 0 when the budget needs the supervisor,
+# return 1 when it does not.
 #
-# A budget wake is remembered apart from .woke (in .budget-woke, written by
-# commit_wake), because .woke is overwritten by the next wake of any kind, and
-# the budget wake would then come round again after every question.
-inspect_budget() {  # <task-id> <dir>
-  local id=$1 dir=$2 budget out spent name reason sig began
-  budget=$(sheepr_meta_get "$id" budget) || return 1
+# A budget wake is remembered apart from .woke (in .budget-woke, or
+# .review-budget-woke for the reviewer, written by commit_wake), because .woke
+# is overwritten by the next wake of any kind, and the budget wake would then
+# come round again after every question.
+#
+# <role> is `worker` (the default) or `reviewer`. The reviewer's budget is
+# meta's review_budget, its usage is `sheepr-usage.sh review`, its agent is
+# review_name, and its signatures carry an `rv-` prefix.
+inspect_budget() {  # <task-id> <dir> [role]
+  local id=$1 dir=$2 role=${3:-worker} budget out spent name reason sig began
+  local bkey=budget umode=task woke="$dir/.budget-woke" since="$dir/.usage-unknown-since" p='' who=''
+  if [ "$role" = reviewer ]; then
+    bkey=review_budget umode=review woke="$dir/.review-budget-woke"
+    since="$dir/.review-usage-unknown-since" p='rv-' who='reviewer '
+  fi
+  budget=$(sheepr_meta_get "$id" "$bkey") || return 1
+  [ -n "$budget" ] || return 1
   [[ $budget =~ ^[1-9][0-9]*$ ]] || {
-    sig="budget-bad:$budget"
-    [ "$(cat "$dir/.budget-woke" 2>/dev/null)" = "$sig" ] && return 1
-    printf '%s\t%s' "$sig" "warning: $id budget not enforced (meta budget '$(excerpt "$budget")' is not a token count)"
+    sig="${p}budget-bad:$budget"
+    [ "$(cat "$woke" 2>/dev/null)" = "$sig" ] && return 1
+    printf '%s\t%s' "$sig" "warning: $id ${who}budget not enforced (meta $bkey '$(excerpt "$budget")' is not a token count)"
     return 0
   }
-  out=$(task_usage "$id") || out=''
+  out=$(task_usage "$id" "$umode") || out=''
   [ -n "$out" ] || out='unknown usage-unreadable'
 
   case "$out" in
     unknown\ *)
       reason=${out#unknown }
-      sig="warning:$budget"
-      [ "$(cat "$dir/.budget-woke" 2>/dev/null)" = "$sig" ] && return 1
+      sig="${p}warning:$budget"
+      [ "$(cat "$woke" 2>/dev/null)" = "$sig" ] && return 1
       case "$reason" in
         *-no-session|*-no-usage)
-          # Normal for a worker that has only just started. Give it the stall
+          # Normal for an agent that has only just started. Give it the stall
           # window to write its first counts before calling it unenforced.
-          [ -f "$dir/.usage-unknown-since" ] || touch "$dir/.usage-unknown-since"
-          began=$(stat -f %m "$dir/.usage-unknown-since" 2>/dev/null \
-                  || stat -c %Y "$dir/.usage-unknown-since" 2>/dev/null) || began=0
+          [ -f "$since" ] || touch "$since"
+          began=$(stat -f %m "$since" 2>/dev/null || stat -c %Y "$since" 2>/dev/null) || began=0
           if [ $(( $(sheepr_now) - began )) -lt "$SHEEPR_STALL" ]; then
-            triage "$id" "usage unknown ($reason); waiting before warning"
+            triage "$id" "${who}usage unknown ($reason); waiting before warning"
             return 1
           fi
           ;;
       esac
-      printf '%s\t%s' "$sig" "warning: $id budget not enforced ($(excerpt "$reason"))"
+      printf '%s\t%s' "$sig" "warning: $id ${who}budget not enforced ($(excerpt "$reason"))"
       return 0
       ;;
   esac
-  rm -f "$dir/.usage-unknown-since"
+  rm -f "$since"
 
   # <total> <input> <output> <source>. Input already excludes cache tokens.
   local input output
   read -r _ input output _ <<<"$out"
   if ! [[ $input =~ ^[0-9]+$ && $output =~ ^[0-9]+$ ]]; then
-    triage "$id" "usage unparseable: $(excerpt "$out")"
-    sig="warning:$budget"
-    [ "$(cat "$dir/.budget-woke" 2>/dev/null)" = "$sig" ] && return 1
-    printf '%s\t%s' "$sig" "warning: $id budget not enforced (usage unparseable)"
+    triage "$id" "${who}usage unparseable: $(excerpt "$out")"
+    sig="${p}warning:$budget"
+    [ "$(cat "$woke" 2>/dev/null)" = "$sig" ] && return 1
+    printf '%s\t%s' "$sig" "warning: $id ${who}budget not enforced (usage unparseable)"
     return 0
   fi
   spent=$((input + output))
   [ "$spent" -ge "$budget" ] || return 1
 
-  # Over. Stop the spending first, whether or not the wake is new: a worker
+  # Over. Stop the spending first, whether or not the wake is new: an agent
   # resumed without a raised budget is stopped again.
-  name=$(sheepr_meta_get "$id" name) || name="sheepr-$id"
+  if [ "$role" = reviewer ]; then
+    name=$(sheepr_meta_get "$id" review_name) || name="rv-$id"
+  else
+    name=$(sheepr_meta_get "$id" name) || name="sheepr-$id"
+  fi
   local note=''
   if [ "$(sheepr_agent_state "$name")" = working ]; then
     if sheepr_agent_interrupt "$name"; then
-      triage "$id" "over budget ($spent/$budget); interrupted"
+      triage "$id" "${who}over budget ($spent/$budget); interrupted"
     else
-      triage "$id" "over budget ($spent/$budget); interrupt FAILED"
-      note=' (interrupt failed; the worker may still be spending)'
+      triage "$id" "${who}over budget ($spent/$budget); interrupt FAILED"
+      note=" (interrupt failed; the ${who:-worker }may still be spending)"
+      note=${note/  / }
     fi
   fi
 
   # A failed interrupt is a different thing to report than a clean one.
-  sig="over:$budget"
+  sig="${p}over:$budget"
   [ -z "$note" ] || sig="$sig:interrupt-failed"
-  [ "$(cat "$dir/.budget-woke" 2>/dev/null)" = "$sig" ] && return 1
-  printf '%s\t%s' "$sig" "overbudget: $id $spent/$budget$note"
+  [ "$(cat "$woke" 2>/dev/null)" = "$sig" ] && return 1
+  printf '%s\t%s' "$sig" "overbudget: $id ${who}$spent/$budget$note"
+  return 0
+}
+
+# --- the review ---------------------------------------------------------------
+
+# A short fingerprint of what the reviewer pane shows, for evidence of life.
+pane_fingerprint() {  # <text>
+  printf '%s' "$1" | cksum | cut -d' ' -f1
+}
+
+# The review's own ladder, used instead of the worker's while a review is
+# open on a done task. Print "<signature>\t<reason>" when actionable.
+#
+#   1. The reviewer's budget (review_budget), as for a worker.
+#   2. The sentinel in the reviewer pane, read through the Herdr adapter.
+#      Found -> `reviewed: <id>`, once per review.
+#   3. Ask herdr about the reviewer. missing -> `missing:`, blocked ->
+#      `blocked:`, working -> alive.
+#   4. Otherwise the usual stall rules: a quiet window of SHEEPR_STALL
+#      seconds with no change in the pane and no file written in the worktree
+#      -> `stalled:`.
+inspect_review() {  # <task-id> <dir>
+  local id=$1 dir=$2 pane name nonce text agent
+  pane=$(sheepr_meta_get "$id" review_pane) || pane=''
+  name=$(sheepr_meta_get "$id" review_name) || name="rv-$id"
+  nonce=$(sheepr_meta_get "$id" review_started) || nonce=''
+
+  # The reviewer's session id appears only once it has taken a turn.
+  if [ -z "$(sheepr_meta_get "$id" review_session 2>/dev/null)" ]; then
+    sheepr_review_record_session "$id" "$name" 1 >/dev/null 2>&1 || true
+  fi
+
+  inspect_budget "$id" "$dir" reviewer && return 0
+
+  if text=$(sheepr_pane_read "$pane" 60); then
+    if sheepr_marker_line "$text" "$(sheepr_review_marker DONE "$nonce")" >/dev/null; then
+      printf '%s\t%s' "reviewed:$nonce" "reviewed: $id - the reviewer printed its findings"
+      return 0
+    fi
+  else
+    text=''
+  fi
+
+  agent=$(sheepr_agent_state "$name")
+  case "$agent" in
+    missing) printf '%s\t%s' "rv-missing:$nonce" "missing: $id - no reviewer at the recorded pane"; return 0 ;;
+    blocked) printf '%s\t%s' "rv-blocked:$nonce" "blocked: $id - the reviewer is parked at a dialog"; return 0 ;;
+    working) rm -f "$dir/.review-quiet-since"; triage "$id" "reviewer working"; return 1 ;;
+  esac
+
+  local fp prev
+  fp=$(pane_fingerprint "$text")
+  prev=$(cat "$dir/.review-seen" 2>/dev/null || printf '')
+  printf '%s' "$fp" >"$dir/.review-seen"
+  if [ "$fp" != "$prev" ]; then
+    rm -f "$dir/.review-quiet-since"
+    triage "$id" "reviewer pane changed"
+    return 1
+  fi
+  if [ ! -f "$dir/.review-quiet-since" ]; then
+    touch "$dir/.review-quiet-since"
+    triage "$id" "reviewer quiet window opened (agent=$agent)"
+    return 1
+  fi
+  local began age wt
+  began=$(stat -f %m "$dir/.review-quiet-since" 2>/dev/null || stat -c %Y "$dir/.review-quiet-since" 2>/dev/null) || began=0
+  age=$(( $(sheepr_now) - began ))
+  if [ "$age" -lt "$SHEEPR_STALL" ]; then
+    triage "$id" "reviewer quiet ${age}s of ${SHEEPR_STALL}s (agent=$agent)"
+    return 1
+  fi
+  wt=$(sheepr_meta_get "$id" worktree) || wt=''
+  worktree_written_since "$wt" "$dir/.review-quiet-since"
+  case $? in
+    0) rm -f "$dir/.review-quiet-since"; triage "$id" "worktree written during the reviewer's quiet window"; return 1 ;;
+    2) triage "$id" "worktree scan inconclusive; treating as no evidence" ;;
+  esac
+  printf '%s\t%s' "rv-stalled:$began" \
+    "stalled: $id - reviewer reads $agent, no sentinel and no change for ${age}s"
   return 0
 }
 
@@ -237,6 +343,18 @@ inspect_task() {  # <task-id>
   key=$(printf '%s' "$fold" | cut -d'|' -f2)
   text=$(printf '%s' "$fold" | cut -d'|' -f3-)
 
+  # A done is woken for once, even after other wakes came between (a review's,
+  # for one). It is remembered apart from .woke for that reason, and forgotten
+  # as soon as the worker is no longer done.
+  [ "$state" = done ] || rm -f "$dir/.done-woke"
+
+  # 0. an open review on a done task has its own ladder. The worker is
+  # finished and has nothing more to say.
+  if [ "$state" = done ] && sheepr_review_open "$id"; then
+    inspect_review "$id" "$dir"
+    return $?
+  fi
+
   # 1. the budget. A finished task spends nothing more.
   case "$state" in
     done|failed) ;;
@@ -248,7 +366,9 @@ inspect_task() {  # <task-id>
   case "$state" in
     question) printf '%s\t%s' "q:$key:$text" "question: $id - $(excerpt "${key}: $text")"; return 0 ;;
     blocked)  printf '%s\t%s' "b:$key:$text" "blocked: $id - $(excerpt "$text")"; return 0 ;;
-    done)     printf '%s\t%s' "d:$text" "done: $id - $(excerpt "$text")"; return 0 ;;
+    done)
+      [ "$(cat "$dir/.done-woke" 2>/dev/null)" = "d:$text" ] && return 1
+      printf '%s\t%s' "d:$text" "done: $id - $(excerpt "$text")"; return 0 ;;
     failed)   printf '%s\t%s' "f:$text" "failed: $id - $(excerpt "$text")"; return 0 ;;
   esac
 
@@ -346,6 +466,8 @@ commit_wake() {  # <task-id> <signature> <reason>
   printf '%s' "$2" >"$(sheepr_task_dir "$1")/.woke"
   case "$2" in
     over:*|warning:*|budget-bad:*) printf '%s' "$2" >"$(sheepr_task_dir "$1")/.budget-woke" ;;
+    rv-over:*|rv-warning:*|rv-budget-bad:*) printf '%s' "$2" >"$(sheepr_task_dir "$1")/.review-budget-woke" ;;
+    d:*) printf '%s' "$2" >"$(sheepr_task_dir "$1")/.done-woke" ;;
   esac
   mkdir -p "$(dirname "$SHEEPR_WAKES")"
   printf '%s|%s|%s\n' "$(sheepr_now)" "$1" "$3" >>"$SHEEPR_WAKES"

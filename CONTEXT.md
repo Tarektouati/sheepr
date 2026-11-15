@@ -16,6 +16,11 @@ It never edits project code itself.
 **worker** - an agent that does one task and then stops.
 A worker never addresses the captain.
 
+**reviewer** - an agent that runs one review of a finished task, in a pane
+split beside the worker, in the same workspace and worktree. It reads and
+reports; it never edits, never posts, and never addresses the captain. A
+claude reviewer runs in plan mode; any other kind is told not to edit.
+
 ## Things
 
 **task** - one unit of work.
@@ -29,6 +34,22 @@ It is written to `brief.md` inside the worktree and is never passed as a command
 **status log** - `tasks/<id>/status`.
 An append-only file. The worker writes one line per event.
 It is the only thing a worker says. Nothing reads a worker's terminal to decide anything.
+
+The one exception is the reviewer's pane: a reviewer writes no status log, so
+the watcher and `sheepr-review.sh collect` read its pane, through the Herdr
+adapter only, for the sentinel and the findings. Nothing else reads a terminal
+to decide anything.
+
+**review** - a `/semantic-review` of a done task's PR, or of its branch
+against meta's `base`, run by a reviewer the captain said yes to.
+`bin/sheepr-review.sh`. Its findings are saved to `tasks/<id>/review.md`,
+which travels with the task. The reviewer has its own budget, from the
+`review` route, recorded in meta apart from the worker's.
+
+**sentinel** - the line a reviewer prints after its last finding,
+`SHEEPR-REVIEW-DONE-<nonce>`, which wakes `reviewed:`. The prompt describes it
+in parts and never holds it whole, so its echo cannot be mistaken for it. A
+reviewer that goes quiet without it is `stalled:`.
 
 **meta** - `tasks/<id>/meta`.
 Key and value, one per line. Where the task's workspace, pane, worktree, branch, kind and delivery are recorded.
@@ -83,6 +104,9 @@ log, and stay silent.
 
 **resolve** - close an open question or blocker by key. `bin/sheepr-send.sh --resolve`.
 
+**reopen** - send a done worker a fix plan the captain approved after a
+review. `bin/sheepr-send.sh --reopen`. Writes `reopened`.
+
 **tear down** - retire a task after proving its work landed. `bin/sheepr-teardown.sh`.
 
 **refuse** - stop and report, rather than guess or proceed.
@@ -100,7 +124,9 @@ A worker may write five:
 | `done` | finished, with delivery evidence in the text. |
 | `failed` | gave up, with the reason. |
 
-The supervisor writes one: `resolved`, which closes a key.
+The supervisor writes two: `resolved`, which closes a key, and `reopened`,
+which sends a done worker back to work on a fix plan. `reopened` folds as
+working, so the worker's next `done` wakes again.
 
 Line format, four pipe-separated fields:
 

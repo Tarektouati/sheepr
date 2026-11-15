@@ -20,6 +20,11 @@
 #   branch  an upstream on the remote with nothing unpushed.
 #   local   at least one commit the base branch does not have.
 #
+# A reviewer pane, if the task has one, is closed with the workspace, and
+# tasks/<id>/review.md is archived with the rest of the task. Neither changes
+# the proof above: a merge before the review's findings are in is never
+# blocked by the review.
+#
 # In every mode the worktree must have no uncommitted change. brief.md is
 # excluded at spawn time so it does not count against this.
 #
@@ -145,6 +150,16 @@ else
 fi
 
 # --- retire -----------------------------------------------------------------
+
+# The reviewer first: closing its pane is harmless when it is already gone.
+RPANE=$(sheepr_meta_get "$ID" review_pane) || RPANE=''
+if [ -n "$RPANE" ]; then
+  if sheepr_pane_close "$RPANE"; then
+    printf 'closed reviewer pane %s\n' "$RPANE"
+  else
+    warn "could not close reviewer pane $RPANE; removing the workspace closes it"
+  fi
+fi
 
 # Resolve the workspace by label if the recorded id is stale.
 if [ -z "$WS" ] || ! herdr workspace list 2>/dev/null \

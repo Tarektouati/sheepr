@@ -4,6 +4,7 @@
 #
 # Usage:
 #   sheepr-usage.sh task <task-id> [--json] [--read-only]
+#   sheepr-usage.sh review <task-id> [--json]
 #   sheepr-usage.sh self [--json]
 #
 # Prints one line:
@@ -12,6 +13,12 @@
 #
 # `task` reads the usage of one task's worker, from the log of the harness
 # named by its kind, for sessions whose working directory is its worktree.
+# Sessions recorded in meta's review_sessions are left out: they belong to the
+# task's reviewers, who run in the same worktree.
+# `review` reads the current reviewer's usage: only the session recorded as
+# review_session, from the log of the harness recorded as review_kind. The
+# session id comes from herdr (agent_session); it is claude's <id>.jsonl and
+# codex's session_meta payload.id, both confirmed against live sessions.
 # `self` reads the supervisor's own: every harness log for sessions run in
 # sheepr's own directory ($SHEEPR_HOME), all of them summed.
 #
@@ -62,6 +69,8 @@
 #   no-worktree         the task's meta records no worktree
 #   kind-unknown        the task's meta records no kind this file reads
 #   no-session          (self) no harness has a session in sheepr's directory
+#   no-review           (review) the task has never had a review started
+#   review-no-session   (review) the reviewer's session id is not known yet
 
 set -uo pipefail
 
@@ -88,13 +97,24 @@ dir_names() {  # <dir>
 
 claude_slug() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
 
-read_claude() {  # <dir>
-  local d name files=()
+# Is <session> one of the space-separated ids in <list>?
+in_list() {  # <session> <list>
+  case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
+# <only> and <skip> are space-separated session ids. A session's log is
+# <dir>/<id>.jsonl, and its subagents log under <dir>/<id>/.
+read_claude() {  # <dir> [only] [skip]
+  local d name rel sess only=${2:-} skip=${3:-} files=()
   while read -r name; do
     d="$SHEEPR_CLAUDE_HOME/projects/$(claude_slug "$name")"
     [ -d "$d" ] || continue
-    while IFS= read -r -d '' f; do files+=("$f"); done \
-      < <(find -H "$d" -type f -name '*.jsonl' -print0 2>/dev/null)
+    while IFS= read -r -d '' f; do
+      rel=${f#"$d"/}; sess=${rel%%/*}; sess=${sess%.jsonl}
+      if [ -n "$only" ] && ! in_list "$sess" "$only"; then continue; fi
+      if [ -n "$skip" ] && in_list "$sess" "$skip"; then continue; fi
+      files+=("$f")
+    done < <(find -H "$d" -type f -name '*.jsonl' -print0 2>/dev/null)
   done < <(dir_names "$1")
 
   [ ${#files[@]} -gt 0 ] || { unknown_json claude-no-session; return; }
@@ -124,9 +144,11 @@ read_claude() {  # <dir>
 
 # --- codex ------------------------------------------------------------------
 
-read_codex() {  # <dir>
-  local names files=() matched=() f
+read_codex() {  # <dir> [only] [skip]
+  local names files=() matched=() f only skip
   names=$(dir_names "$1" | jq -R . | jq -sc .)
+  only=$(printf '%s' "${2:-}" | tr ' ' '\n' | jq -R 'select(length > 0)' | jq -sc .)
+  skip=$(printf '%s' "${3:-}" | tr ' ' '\n' | jq -R 'select(length > 0)' | jq -sc .)
 
   local root
   for root in "$SHEEPR_CODEX_HOME/sessions" "$SHEEPR_CODEX_HOME/archived_sessions"; do
@@ -142,11 +164,13 @@ read_codex() {  # <dir>
     while IFS= read -r f; do
       [ -n "$f" ] && matched+=("$f")
     done < <(awk 'FNR == 1 { printf "%s\t%s\n", FILENAME, $0; nextfile }' "${files[@]}" \
-      | jq -R -r --argjson names "$names" '
+      | jq -R -r --argjson names "$names" --argjson only "$only" --argjson skip "$skip" '
           index("\t") as $i
           | .[:$i] as $path
           | (.[$i + 1:] | fromjson? // empty)
           | select(.type == "session_meta" and (.payload.cwd as $c | $names | index($c)))
+          | select(($only | length) == 0 or (.payload.id as $s | $only | index($s)))
+          | select(.payload.id as $s | ($skip | index($s)) | not)
           | $path')
   fi
 
@@ -170,17 +194,17 @@ read_codex() {  # <dir>
 
 # --- reading ----------------------------------------------------------------
 
-read_kind() {  # <kind> <dir>
+read_kind() {  # <kind> <dir> [only-sessions] [skip-sessions]
   case "$1" in
-    claude) read_claude "$2" ;;
-    codex)  read_codex "$2" ;;
+    claude) read_claude "$2" "${3:-}" "${4:-}" ;;
+    codex)  read_codex "$2" "${3:-}" "${4:-}" ;;
     cursor) unknown_json cursor-unreadable ;;
     *)      unknown_json kind-unknown ;;
   esac
 }
 
 usage_task() {  # <task-id> <read-only>
-  local id=$1 kind wt out src
+  local id=$1 kind wt out src skip
   sheepr_validate_id "$id"
   sheepr_task_exists "$id" || die "no such task: $id"
 
@@ -190,7 +214,8 @@ usage_task() {  # <task-id> <read-only>
     unknown_json no-worktree
     return
   fi
-  out=$(read_kind "$kind" "$wt")
+  skip=$(sheepr_meta_get "$id" review_sessions) || skip=''
+  out=$(read_kind "$kind" "$wt" '' "$skip")
   printf '%s\n' "$out"
 
   [ "$2" = 1 ] && return
@@ -198,6 +223,20 @@ usage_task() {  # <task-id> <read-only>
   if [ -n "$src" ] && ! sheepr_meta_get "$id" usage_source >/dev/null; then
     sheepr_meta_set "$id" usage_source "$src"
   fi
+}
+
+# The current reviewer's spend, apart from the worker's.
+usage_review() {  # <task-id>
+  local id=$1 kind wt sess
+  sheepr_validate_id "$id"
+  sheepr_task_exists "$id" || die "no such task: $id"
+  kind=$(sheepr_meta_get "$id" review_kind) || kind=''
+  [ -n "$kind" ] || { unknown_json no-review; return; }
+  wt=$(sheepr_meta_get "$id" worktree) || wt=''
+  [ -n "$wt" ] || { unknown_json no-worktree; return; }
+  sess=$(sheepr_meta_get "$id" review_session) || sess=''
+  [ -n "$sess" ] || { unknown_json review-no-session; return; }
+  read_kind "$kind" "$wt" "$sess" ''
 }
 
 # Every harness's sessions in sheepr's own directory, summed. The supervisor
@@ -232,7 +271,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --json) JSON=1 ;;
     --read-only) READ_ONLY=1 ;;
-    -h|--help) sed -n '3,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "unknown argument: $1" ;;
     *) [ -z "$ID" ] || die "unexpected argument: $1"; ID=$1 ;;
   esac
@@ -242,10 +281,12 @@ done
 case "$MODE" in
   task) [ -n "$ID" ] || die "usage: sheepr-usage.sh task <task-id> [--json] [--read-only]"
         RESULT=$(usage_task "$ID" "$READ_ONLY") || exit 1 ;;
+  review) [ -n "$ID" ] || die "usage: sheepr-usage.sh review <task-id> [--json]"
+        RESULT=$(usage_review "$ID") || exit 1 ;;
   self) [ -z "$ID" ] || die "self takes no task id"
         RESULT=$(usage_self) || exit 1 ;;
-  -h|--help) sed -n '3,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-  *) die "usage: sheepr-usage.sh task <task-id> | self  [--json]" ;;
+  -h|--help) sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *) die "usage: sheepr-usage.sh task <task-id> | review <task-id> | self  [--json]" ;;
 esac
 
 [ -n "$RESULT" ] || die "could not read usage"

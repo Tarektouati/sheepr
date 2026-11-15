@@ -120,8 +120,12 @@ STUB_EOF
 chmod +x "$STUB/herdr"
 trap 'rm -rf "$STUB"; cleanup_home' EXIT
 
+# Spawn records the base flock detects; the fake reports origin/main.
+use_fake_flock
+
 stub_spawn() {  # <id> <brief>
   env PATH="$STUB:$PATH" HERDR_ENV=1 STUB_DIR="$STUB" SHEEPR_HOME="$SHEEPR_HOME" \
+    SHEEPR_FLOCK="$SHEEPR_FLOCK" FAKE_FLOCK_JSON="${FAKE_FLOCK_JSON:-}" FAKE_FLOCK_FAIL="${FAKE_FLOCK_FAIL:-0}" \
     "$SHEEPR_ROOT/bin/sheepr-spawn.sh" "$REPO" "$1" --kind cursor --delivery local --brief "$2" 2>&1
 }
 
@@ -205,6 +209,22 @@ is "$rc" '1' 'a spawn whose worktree cannot be created fails'
 rm -f "$STUB/create-fails"
 out=$(run_bounded 10 stub_spawn fails "$SHEEPR_HOME/fails.md"); rc=$?
 is "$rc" '0' 'the id can be spawned again after a failed attempt'
+
+# --- the base ------------------------------------------------------------------
+#
+# A review diffs a branch or local task against meta's base, so spawn records
+# the one flock detects, and refuses rather than guess when flock cannot say.
+
+is "$(grep '^base=' "$SHEEPR_HOME/tasks/fails/meta")" 'base=origin/main' \
+  'spawn records the base flock detects in meta'
+
+printf 'a brief\n' >"$SHEEPR_HOME/nobase.md"
+out=$(FAKE_FLOCK_FAIL=1 run_bounded 10 stub_spawn nobase "$SHEEPR_HOME/nobase.md"); rc=$?
+is "$rc" '1' 'spawn refuses when flock cannot read the repository'
+case "$out" in *'base branch is unknown'*) ok 'and the refusal says the base is unknown' ;;
+  *) fail 'and the refusal says the base is unknown' "got: $out" ;; esac
+[ -e "$SHEEPR_HOME/tasks/nobase" ] && fail 'a spawn refused for its base claims no id' \
+  || ok 'a spawn refused for its base claims no id'
 
 # The placeholder check reads the snapshot too, and still refuses.
 

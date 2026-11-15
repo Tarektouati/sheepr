@@ -19,7 +19,10 @@ A worker never addresses the captain.
 **reviewer** - an agent that runs one review of a finished task, in a pane
 split beside the worker, in the same workspace and worktree. It reads and
 reports; it never edits, never posts, and never addresses the captain. A
-claude reviewer runs in plan mode; any other kind is told not to edit.
+harness holds it read-only: claude and cursor in plan mode, codex in its
+read-only sandbox. A review that cannot finish is **abandoned**
+(`sheepr-review.sh abandon`): its pane is closed, what it held is saved, and
+it yields no findings.
 
 ## Things
 

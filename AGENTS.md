@@ -122,7 +122,7 @@ while it waits, and wakes you once per actionable thing:
 - `overbudget:` a worker (or a reviewer) reached its token budget and was interrupted. Its
   work is kept. Tell the captain what it spent and what is left to do; if they
   raise it, `./bin/sheepr-send.sh <id> --budget <tokens>`, then send a reply
-  to resume
+  to resume; for a reviewer, add `--reviewer` to both
 - `warning:` a task's budget cannot be enforced; tell the captain once
 
 Read the fold before the pane: it is cheaper, and the status log is the truth.
@@ -171,11 +171,22 @@ alive. It never addresses the captain; you relay everything. On `reviewed:`:
 
     ./bin/sheepr-review.sh collect <id>
 
+A reviewer that wakes `overbudget:`, `blocked:`, `missing:` or `stalled:`
+is yours to handle, like a worker's, through `sheepr-send.sh <id> --reviewer`
+(a reply, `--keys`, or `--budget <tokens>` then a reply to resume). If it
+cannot finish, or the captain wants it stopped:
+
+    ./bin/sheepr-review.sh abandon <id>
+
+That closes its pane and saves what it held; tell the captain there are no
+findings, and offer a fresh review.
+
 Report the findings in the captain's terms, then offer three things:
 
 - post them (pr only): ask which, run `sheepr-review.sh post <id> <n,n>`,
   show the captain the exact review it prints, and only on their word run it
-  again with `--yes`. The reviewer never posts.
+  again with `--yes`. The reviewer never posts. If post says the PR head
+  moved, re-run the review or abandon it.
 - discuss them.
 - fix them: the captain picks findings, you draft a plan in
   `briefs/<id>-fix.md`, and once they approve it,
@@ -219,7 +230,7 @@ Each refuses rather than guesses. Read the header comment before using one.
 | `bin/sheepr-fleet.sh` | read-only view of every worktree, task or not |
 | `bin/sheepr-status.sh` | `fold`, `open`, `append` on a status log |
 | `bin/sheepr-send.sh` | reply to a worker, resolve a key, answer a dialog, raise a budget, reopen on a fix plan |
-| `bin/sheepr-review.sh` | start a review, collect its findings, post them to the PR |
+| `bin/sheepr-review.sh` | start a review, collect or abandon it, post its findings to the PR |
 | `bin/sheepr-teardown.sh` | retire a task once its work has landed |
 | `bin/sheepr-test.sh` | run the tests |
 | `bin/sheepr-usage.sh` | a task's tokens, or the supervisor's own (`self`) |

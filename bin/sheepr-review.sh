@@ -6,6 +6,7 @@
 #                            [--model <id>] [--budget <tokens>] [--route <rule>]
 #   sheepr-review.sh collect <task-id>
 #   sheepr-review.sh post    <task-id> <n,n,...|all> [--yes]
+#   sheepr-review.sh abandon <task-id>
 #
 # --kind, --model, --budget and --route usually come from
 # `bin/sheepr-route.sh --type review ...`, unless the captain named their own.
@@ -20,13 +21,16 @@
 #         stop after the findings, post nothing, edit nothing, and end with
 #         the sentinel. Records review_pane, review_name, review_kind,
 #         review_model, review_budget, review_route, review_target,
-#         review_started (also the sentinel's nonce) and, once herdr knows
-#         it, review_session in meta, and clears review_done. The watcher then
-#         wakes `reviewed: <id>` when the sentinel appears.
+#         review_started (also the sentinel's nonce), for pr delivery
+#         review_head (the PR's head commit as the review began) and, once
+#         herdr knows it, review_session in meta, and clears review_done and
+#         review_abandoned. The watcher then wakes `reviewed: <id>` when the
+#         sentinel appears.
 #
-#         A claude reviewer runs under --permission-mode plan, so the harness
-#         itself holds it read-only. cursor and codex reviewers run with their
-#         normal worker permissions; only the prompt forbids edits.
+#         Every kind's harness holds its reviewer read-only: claude in plan
+#         permission mode, cursor in plan mode, codex in the read-only
+#         sandbox (see sheepr_reviewer_args in bin/sheepr-herdr.sh). The
+#         prompt forbids edits as well.
 #
 # collect reads the reviewer pane through the Herdr adapter, writes what lies
 #         between the BEGIN marker and the sentinel to tasks/<id>/review.md,
@@ -43,8 +47,19 @@
 #         set aside, or one that starts with the other's first 60 characters)
 #         is skipped and listed. Without --yes it prints the exact review and
 #         posts nothing. With --yes it posts it with `gh` and prints the
-#         review URL. When GitHub refuses an APPROVE, the same review is sent
-#         as COMMENT with the refusal and LGTM in the body.
+#         review URL. When GitHub refuses the approval itself (its error
+#         mentions approving: your own PR, or no permission to approve), the
+#         same review is sent as COMMENT with the refusal and LGTM in the
+#         body. Any other failure, a 422 on an anchor for one, is reported as
+#         it is, and nothing is re-sent.
+#
+# abandon closes a review that will never print its sentinel: a reviewer
+#         interrupted at its budget, or whose pane closed or crashed. It
+#         closes the reviewer pane if it still exists, saves whatever the
+#         pane holds to tasks/<id>/review.md under an `abandoned` header (or
+#         a note that it could not be read), and records review_done and
+#         review_abandoned. An abandoned review cannot be posted; start a new
+#         one instead.
 #
 # Refuses:
 #   start   - unless the task's fold is `done`: a review is of finished work.
@@ -55,6 +70,8 @@
 #             flock's row; branch or local delivery with no `base` in meta
 #             (a task spawned before spawn recorded it). A guessed target
 #             reviews the wrong diff.
+#           - pr delivery when gh cannot read the PR's head commit, which
+#             post needs to prove the findings' lines have not moved.
 #           - when the reviewer cannot be started or prompted. The new pane
 #             is closed again and nothing is recorded.
 #   collect - unless a review is open.
@@ -68,15 +85,23 @@
 #             number given is a finding in review.md.
 #           - when gh cannot read the PR, its diff or your existing comments.
 #             Unread duplicates would be posted twice.
+#           - when the review was abandoned.
+#           - when the PR's head is no longer review_head: the findings'
+#             lines may have moved. Re-run the review, or abandon it.
+#           - to fall back to an LGTM comment for any failure but a refused
+#             approval.
 #           - to post anything without --yes.
+#   abandon - unless a review is open.
+#           - when the reviewer pane exists but cannot be closed: a reviewer
+#             still running must not be forgotten. review.md is kept, the
+#             review stays open, and abandon can be run again.
 #
 # The reviewer never posts, and never addresses the captain: everything it
 # says reaches the captain through the supervisor (hard rule 4).
 #
 # Verified with claude 2.1.325 under herdr 0.9.5 (see bin/sheepr-herdr.sh).
-# The cursor and codex reviewer paths use launch args already verified for
-# workers; whether their harness runs the /semantic-review skill from that
-# prompt was not checked.
+# Whether cursor and codex run the /semantic-review skill from that prompt
+# was not checked.
 
 set -uo pipefail
 
@@ -90,9 +115,12 @@ set -uo pipefail
 # How much scrollback collect reads. A review is far shorter; the margin is
 # for a reviewer that read many files on the way.
 SHEEPR_REVIEW_READ_LINES=${SHEEPR_REVIEW_READ_LINES:-5000}
+# How many seconds start waits for herdr to report the reviewer's session id.
+# The watcher records it later if it is not known by then.
+SHEEPR_REVIEW_SESSION_WAIT=${SHEEPR_REVIEW_SESSION_WAIT:-10}
 
 usage() {
-  sed -n '3,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '3,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 2
 }
 
@@ -143,7 +171,7 @@ cmd_start() {
   [ "$state" = done ] || die "refusing to review $id: its fold is '$state', not done"
   sheepr_review_open "$id" && die "refusing to review $id: a review is already open (sheepr-review.sh collect $id)"
 
-  local delivery worktree branch base pane target
+  local delivery worktree branch base pane target head=''
   delivery=$(sheepr_meta_get "$id" delivery) || die "task $id has no recorded delivery mode"
   worktree=$(sheepr_meta_get "$id" worktree) || die "task $id has no recorded worktree"
   [ -d "$worktree" ] || die "the worktree is gone: $worktree"
@@ -161,6 +189,9 @@ cmd_start() {
         fi
       fi
       [ -n "$target" ] || die "refusing to review $id: delivery is pr but no pull request URL is in its done line or in flock"
+      sheepr_require_tools gh
+      head=$(gh pr view "$target" --json headRefOid -q .headRefOid 2>/dev/null) || head=''
+      [ -n "$head" ] || die "refusing to review $id: gh could not read the head commit of $target"
       ;;
     branch|local)
       base=$(sheepr_meta_get "$id" base) || base=''
@@ -206,9 +237,11 @@ cmd_start() {
   sheepr_meta_set "$id" review_route "$route"
   sheepr_meta_set "$id" review_target "$target"
   sheepr_meta_set "$id" review_session ''
+  sheepr_meta_set "$id" review_head "$head"
   sheepr_meta_set "$id" review_done ''
+  sheepr_meta_set "$id" review_abandoned ''
   sheepr_meta_set "$id" review_started "$nonce"
-  sheepr_review_record_session "$id" "$name" 10 || true
+  sheepr_review_record_session "$id" "$name" "$SHEEPR_REVIEW_SESSION_WAIT" || true
 
   printf 'review started for %s\n' "$id"
   printf '  reviewer  %s %s\n' "$kind" "${model:-harness default}"
@@ -277,6 +310,43 @@ cmd_collect() {
   printf 'review collected for %s: %s finding(s) in %s\n' "$id" "$(parse_findings "$out" | jq 'length')" "$out"
 }
 
+# --- abandon ------------------------------------------------------------------
+
+cmd_abandon() {
+  local id=$1
+  [ $# -eq 1 ] || die "usage: sheepr-review.sh abandon <task-id>"
+  sheepr_review_open "$id" || die "no review is open on $id"
+  sheepr_herdr_require
+
+  local pane text dir out now
+  pane=$(sheepr_meta_get "$id" review_pane) || pane=''
+  dir=$(sheepr_task_dir "$id")
+  out="$dir/review.md"
+  now=$(sheepr_now)
+  text=''
+  [ -n "$pane" ] && text=$(sheepr_pane_read "$pane" "$SHEEPR_REVIEW_READ_LINES") || text=''
+  {
+    printf '<!-- sheepr review: task=%s target=%s kind=%s model=%s started=%s abandoned=%s -->\n' \
+      "$id" "$(sheepr_meta_get "$id" review_target)" "$(sheepr_meta_get "$id" review_kind)" \
+      "$(sheepr_meta_get "$id" review_model)" "$(sheepr_meta_get "$id" review_started)" "$now"
+    printf 'ABANDONED: the reviewer never printed its sentinel, so these are not findings.\n\n'
+    if [ -n "$text" ]; then
+      printf 'What the reviewer pane held:\n\n'
+      printf '%s\n' "$text" | clean_findings
+    else
+      printf 'The reviewer pane %s could not be read: it is gone, or herdr did not answer.\n' "${pane:-(none recorded)}"
+    fi
+  } >"$out.tmp" && mv -f "$out.tmp" "$out" || die "could not write $out"
+
+  if [ -n "$pane" ]; then
+    sheepr_pane_close "$pane" \
+      || die "saved $out, but the reviewer pane $pane could not be closed; the review stays open, run abandon again"
+  fi
+  sheepr_meta_set "$id" review_abandoned "$now"
+  sheepr_meta_set "$id" review_done "$now"
+  printf 'review abandoned for %s; what the pane held is in %s\n' "$id" "$out"
+}
+
 # --- post -----------------------------------------------------------------------
 
 # review.md's numbered findings as a JSON array of
@@ -322,20 +392,45 @@ parse_findings() {  # <review.md>
 # The lines a review comment can anchor to, from a unified diff, one
 # "<path>\t<RIGHT|LEFT>\t<line>" per line.
 anchorable_lines() {
+  # Inside a hunk every line is content, even one that begins `--- ` or
+  # `+++ ` (a removed `-- ` SQL comment, an added `++ ` line). The hunk ends
+  # when both of its counts are used up; only then is `---`/`+++` a header.
   awk '
-    /^diff --git / { path = ""; oldp = ""; next }
-    /^--- / { oldp = substr($0, 5); sub(/^a\//, "", oldp); next }
-    /^\+\+\+ / { path = substr($0, 5); sub(/^b\//, "", path); if (path == "/dev/null") path = oldp; next }
-    /^@@ / {
-      split($2, o, ","); split($3, w, ",")
-      ol = substr(o[1], 2) + 0; nl = substr(w[1], 2) + 0
-      inhunk = 1; next
+    function count(s,   a) { return (split(s, a, ",") > 1) ? a[2] + 0 : 1 }
+    /^diff --git / { path = ""; oldp = ""; orem = 0; nrem = 0; next }
+    orem <= 0 && nrem <= 0 {
+      if (/^--- /) { oldp = substr($0, 5); sub(/^a\//, "", oldp); next }
+      if (/^\+\+\+ /) { path = substr($0, 5); sub(/^b\//, "", path); if (path == "/dev/null") path = oldp; next }
+      if (/^@@ /) {
+        orem = count(substr($2, 2)); nrem = count(substr($3, 2))
+        ol = substr($2, 2); sub(/,.*/, "", ol); ol += 0
+        nl = substr($3, 2); sub(/,.*/, "", nl); nl += 0
+      }
+      next
     }
-    !inhunk || path == "" { next }
-    /^\+/ { printf "%s\tRIGHT\t%d\n", path, nl; nl++; next }
-    /^-/  { printf "%s\tLEFT\t%d\n", path, ol; ol++; next }
-    /^ / || /^$/ { printf "%s\tRIGHT\t%d\n", path, nl; ol++; nl++; next }
+    /^\\/ { next }
+    path == "" { next }
+    /^\+/ { printf "%s\tRIGHT\t%d\n", path, nl; nl++; nrem--; next }
+    /^-/  { printf "%s\tLEFT\t%d\n", path, ol; ol++; orem--; next }
+    { printf "%s\tRIGHT\t%d\n", path, nl; ol++; nl++; orem--; nrem--; next }
   '
+}
+
+# The reason in a failed `gh api` call's output: the errors and message of
+# the JSON body GitHub returned, else gh's own first line.
+gh_error() {  # <output>
+  local j why
+  j=$(printf '%s\n' "$1" | grep -m1 '^{') || j=''
+  why=$(printf '%s' "$j" | jq -r '[(.errors // [] | .[] | if type == "object" then (.message // tostring) else tostring end), .message] | map(select(. != null and . != "")) | join("; ")' 2>/dev/null) || why=''
+  [ -n "$why" ] || why=$(printf '%s\n' "$1" | head -1)
+  printf '%s' "$why"
+}
+
+# Did GitHub refuse the approval itself, and nothing else? Its refusals all
+# name approving ("Can not approve your own pull request", "not permitted to
+# approve"); an anchor or payload error never does.
+approval_refused() {  # <reason>
+  printf '%s' "$1" | grep -qi 'approv'
 }
 
 cmd_post() {
@@ -357,6 +452,8 @@ cmd_post() {
   file="$(sheepr_task_dir "$id")/review.md"
   [ -f "$file" ] && ! sheepr_review_open "$id" \
     || die "refusing to post for $id: no collected review (sheepr-review.sh collect $id)"
+  [ -z "$(sheepr_meta_get "$id" review_abandoned 2>/dev/null)" ] \
+    || die "refusing to post for $id: its review was abandoned; start a new one"
   url=$(sheepr_meta_get "$id" review_target) || url=''
   [[ $url =~ ^https://github\.com/([^/]+)/([^/]+)/pull/([0-9]+)$ ]] \
     || die "refusing to post for $id: '$url' is not a GitHub pull request URL"
@@ -381,6 +478,12 @@ cmd_post() {
   local R="$owner/$repo" pr me diff anchors existing bodies
   pr=$(gh pr view "$num" -R "$R" --json headRefOid,author 2>/dev/null) \
     || die "gh could not read $url"
+  local was now
+  was=$(sheepr_meta_get "$id" review_head) || was=''
+  now=$(printf '%s' "$pr" | jq -r '.headRefOid // empty')
+  [ -n "$was" ] || die "refusing to post for $id: meta records no review_head, so the findings cannot be proved to match the PR's lines"
+  [ "$was" = "$now" ] \
+    || die "refusing to post for $id: the head of $url moved from $was to ${now:-unknown} since the review, so its lines may have moved; re-run the review or abandon it"
   me=$(gh api user -q .login 2>/dev/null) || die "gh could not tell who you are"
   diff=$(gh pr diff "$num" -R "$R" 2>/dev/null) || die "gh could not read the diff of $url"
   anchors=$(printf '%s\n' "$diff" | anchorable_lines | jq -R -s -c \
@@ -462,10 +565,9 @@ cmd_post() {
   payload=$(mktemp "${TMPDIR:-/tmp}/sheepr-review-XXXXXX") || die "could not write the review payload"
   printf '%s' "$plan" | jq '.review' >"$payload"
   if ! resp=$(gh api "repos/$R/pulls/$num/reviews" -X POST --input "$payload" 2>&1); then
-    if [ "$(jq -r .event "$payload")" = APPROVE ]; then
-      local why
-      why=$(printf '%s' "$resp" | jq -r '.message // empty' 2>/dev/null)
-      [ -n "$why" ] || why=$(printf '%s' "$resp" | head -1)
+    local why
+    why=$(gh_error "$resp")
+    if [ "$(jq -r .event "$payload")" = APPROVE ] && approval_refused "$why"; then
       jq --arg w "$why" '.event = "COMMENT"
         | .body = ((.body | split("\n")) as $l
                    | ([$l[0], "", "Approval was not possible (\($w)). LGTM: no blocking issues found."] + $l[1:])
@@ -477,7 +579,7 @@ cmd_post() {
       warn "GitHub refused the approval ($why); posted as COMMENT with LGTM in the body"
     else
       rm -f "$payload"
-      die "GitHub refused the review; nothing was posted: $(printf '%s' "$resp" | head -3)"
+      die "GitHub refused the review ($why); nothing was posted"
     fi
   fi
   rm -f "$payload"
@@ -498,6 +600,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     start) cmd_start "$ID" "$@" ;;
     collect) cmd_collect "$ID" "$@" ;;
     post) cmd_post "$ID" "$@" ;;
+    abandon) cmd_abandon "$ID" "$@" ;;
     *) usage ;;
   esac
 fi

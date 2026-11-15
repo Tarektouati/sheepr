@@ -21,6 +21,25 @@
 #   workspace list  -> .result.workspaces[] {workspace_id,label,agent_status}
 #   pane list       -> .result.panes[] {pane_id,agent_status}
 #   agent read      -> PLAIN TEXT on stdout, not JSON.
+#   pane split      -> .result.pane.pane_id                  (herdr 0.9.5)
+#   pane read       -> PLAIN TEXT on stdout; .error.code pane_not_found and
+#                      exit 1 once the pane is gone           (herdr 0.9.5)
+#   pane close      -> .result.type "ok"; .error.code pane_not_found and
+#                      exit 1 when it is already gone         (herdr 0.9.5)
+#   agent get       -> .result.agent.agent_session.value is the harness's
+#                      session id once the agent has taken a turn: claude's
+#                      <id>.jsonl, codex's session_meta payload.id. It is
+#                      absent before the first prompt.        (herdr 0.9.5)
+#
+# The reviewer (bin/sheepr-review.sh) runs in a second pane split beside the
+# worker, in the same workspace and worktree. Confirmed on herdr 0.9.5 with
+# claude 2.1.325: `pane split --no-focus` leaves focus where it was, the new
+# pane starts at a shell in --cwd, `agent start` in it works as in a root
+# pane, `--permission-mode plan` reaches "plan mode on", and a reviewer told
+# to print a sentinel built from parts ("the word X followed by a hyphen and
+# the number N") prints it on a line of its own while the prompt echo never
+# holds it whole. Closing the pane removes the agent: `agent get` on its name
+# then answers agent_not_found.
 
 # shellcheck source=bin/sheepr-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sheepr-lib.sh"
@@ -109,6 +128,28 @@ sheepr_kind_args() {  # <kind> [task-dir] [model]
       fi
       [ -z "$model" ] || SHEEPR_KIND_ARGS+=(-m "$model")
       ;;
+    *) return 1 ;;
+  esac
+}
+
+# Fill SHEEPR_KIND_ARGS with the launch args for a REVIEWER of <kind>.
+#
+# A reviewer must not change the worktree. claude can be held to that by the
+# harness: --permission-mode plan, and never --dangerously-skip-permissions,
+# which would override it. cursor and codex have no mode that was checked to
+# hold them read-only, so they start with their normal worker permissions and
+# the review prompt forbids edits.
+sheepr_reviewer_args() {  # <kind> [model]
+  local kind=$1 model=${2:-}
+  case "$kind" in
+    claude)
+      if [ -n "$model" ]; then
+        sheepr_model_valid "$model" || die "model '$model' must match $SHEEPR_MODEL_RE"
+      fi
+      SHEEPR_KIND_ARGS=(--permission-mode plan)
+      [ -z "$model" ] || SHEEPR_KIND_ARGS+=(--model "$model")
+      ;;
+    cursor|codex) sheepr_kind_args "$kind" '' "$model" ;;
     *) return 1 ;;
   esac
 }
@@ -209,6 +250,49 @@ sheepr_workspace_by_label() {  # <label>
   printf '%s' "$ws"
 }
 
+# --- panes ------------------------------------------------------------------
+
+# Split a new pane to the right of <pane-id>, at a shell in <cwd>, without
+# taking focus. Prints the new pane's id, read from herdr's response.
+sheepr_pane_split() {  # <pane-id> <cwd>
+  local json pane
+  json=$(herdr pane split "$1" --direction right --cwd "$2" --no-focus 2>&1) \
+    || { warn "herdr pane split failed: $(printf '%s' "$json" | head -3)"; return 1; }
+  pane=$(printf '%s' "$json" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
+  [ -n "$pane" ] || { warn "herdr pane split returned no pane id"; return 1; }
+  printf '%s' "$pane"
+}
+
+# Read a pane's rendered output, as plain text. Returns 1 when the pane is
+# gone or the call fails, so a caller can never mistake "no pane" for "no
+# output".
+#
+# This is the one place sheepr reads a terminal to decide anything: the
+# reviewer writes no status log, so its sentinel line is read here. Workers
+# are still judged only by their status log.
+sheepr_pane_read() {  # <pane-id> [lines]
+  herdr pane read "$1" --source recent-unwrapped --lines "${2:-40}" 2>/dev/null
+}
+
+# Close a pane. 0 when herdr closed it or it was already gone, 1 otherwise.
+sheepr_pane_close() {  # <pane-id>
+  local json code
+  json=$(herdr pane close "$1" 2>&1) && return 0
+  code=$(printf '%s' "$json" | jq -r '.error.code // empty' 2>/dev/null)
+  [ "$code" = pane_not_found ] && return 0
+  warn "herdr pane close failed for $1: ${code:-unreadable response}"
+  return 1
+}
+
+# The harness session id of the agent called <name>, or return 1 when herdr
+# has none yet (before the first turn) or the agent is gone.
+sheepr_agent_session() {  # <name-or-pane-id>
+  local s
+  s=$(herdr agent get "$1" 2>/dev/null | jq -r '.result.agent.agent_session.value // empty' 2>/dev/null) || return 1
+  [ -n "$s" ] || return 1
+  printf '%s' "$s"
+}
+
 # --- agents -----------------------------------------------------------------
 
 # Start an agent of <kind> in an existing pane, under a stable name.
@@ -219,12 +303,19 @@ sheepr_workspace_by_label() {  # <label>
 #
 # <model> is optional; empty means the harness's own default.
 #
+# <role> is `worker` (the default) or `reviewer`, which launches with
+# sheepr_reviewer_args instead.
+#
 # Returns 0 when herdr confirms the agent is interactive, 1 otherwise.
-sheepr_agent_start() {  # <name> <kind> <pane-id> [task-dir] [model]
-  local name=$1 kind=$2 pane=$3 task_dir=${4:-} model=${5:-} timeout json code
+sheepr_agent_start() {  # <name> <kind> <pane-id> [task-dir] [model] [role]
+  local name=$1 kind=$2 pane=$3 task_dir=${4:-} model=${5:-} role=${6:-worker} timeout json code
 
   sheepr_kind_valid "$kind" || { warn "unknown agent kind: $kind"; return 1; }
-  sheepr_kind_args "$kind" "$task_dir" "$model"
+  case "$role" in
+    worker) sheepr_kind_args "$kind" "$task_dir" "$model" ;;
+    reviewer) sheepr_reviewer_args "$kind" "$model" ;;
+    *) warn "unknown agent role: $role"; return 1 ;;
+  esac
   timeout=$(sheepr_kind_timeout "$kind")
 
   json=$(herdr agent start "$name" --kind "$kind" --pane "$pane" \
@@ -259,6 +350,29 @@ sheepr_agent_start() {  # <name> <kind> <pane-id> [task-dir] [model]
   done
 
   warn "agent $name ($kind) never became interactive"
+  return 1
+}
+
+# Start a reviewer: sheepr_agent_start with the reviewer's launch args. A
+# reviewer needs no task directory, since it writes no status log.
+sheepr_reviewer_start() {  # <name> <kind> <pane-id> [model]
+  sheepr_agent_start "$1" "$2" "$3" '' "${4:-}" reviewer
+}
+
+# Record the reviewer's harness session id in meta, as review_session and in
+# review_sessions, the list the worker's own usage leaves out. Waits up to
+# <tries> seconds for herdr to know it. The watcher retries every pass.
+sheepr_review_record_session() {  # <task-id> <name> [tries]
+  local id=$1 name=$2 tries=${3:-1} s all i
+  for i in $(seq 1 "$tries"); do
+    if s=$(sheepr_agent_session "$name"); then
+      sheepr_meta_set "$id" review_session "$s"
+      all=$(sheepr_meta_get "$id" review_sessions) || all=''
+      case " $all " in *" $s "*) ;; *) sheepr_meta_set "$id" review_sessions "${all:+$all }$s" ;; esac
+      return 0
+    fi
+    [ "$i" -lt "$tries" ] && sleep 1
+  done
   return 1
 }
 

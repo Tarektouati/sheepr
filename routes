@@ -31,6 +31,11 @@
 #              Reference: three medium feature tasks in this repo, run by
 #              claude workers, spent 24k-35k each by this measure.
 #
+# `review` also routes the reviewer that bin/sheepr-review.sh starts after a
+# done: route it with `--type review`, and its budget is the reviewer's own,
+# recorded apart from the worker's. Reading a diff costs little, hence the
+# modest budget. High-risk and large tasks still match the rules above it.
+#
 # The defaults are conservative: anything risky or large goes to the
 # strongest model, only small low-risk fixes and docs go to the cheap one.
 
@@ -40,5 +45,5 @@ large         | *        | large | *    | *         | claude | claude-opus-5-5  
 small-docs    | docs     | small | low  | *         | cursor | composer-2.5      | 50000
 small-fix     | fix      | small | low  | *         | cursor | composer-2.5      | 75000
 reading       | research | *     | *    | *         | claude | claude-sonnet-5-5 | 100000
-review        | review   | *     | *    | *         | claude | claude-sonnet-5-5 | 100000
+review        | review   | *     | *    | *         | claude | claude-sonnet-5-5 | 60000
 default       | *        | *     | *    | *         | claude | claude-sonnet-5-5 | 100000

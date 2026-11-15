@@ -118,7 +118,8 @@ while it waits, and wakes you once per actionable thing:
 - `missing:` there is no agent at a task's endpoint
 - `stalled:` a worker has produced nothing, written nothing, and does not read
   as working
-- `overbudget:` a worker reached its token budget and was interrupted. Its
+- `reviewed:` a reviewer printed its findings; collect them (§7)
+- `overbudget:` a worker (or a reviewer) reached its token budget and was interrupted. Its
   work is kept. Tell the captain what it spent and what is left to do; if they
   raise it, `./bin/sheepr-send.sh <id> --budget <tokens>`, then send a reply
   to resume
@@ -158,7 +159,31 @@ Read the dialog first. Never answer one you have not read.
 
 When a worker reports `done`, check the evidence matches the delivery mode,
 then tell the captain the outcome in their terms: what changed, what the risk
-is, and what you need from them.
+is, and what you need from them. In the same report, offer a semantic
+review. Nothing starts without the captain's yes.
+
+On yes, route it (`--type review`, the task's size and risk), then:
+
+    ./bin/sheepr-review.sh start <id> --kind <k> --model <m> --budget <b> --route <r>
+
+and end your turn. The reviewer runs in a pane beside the worker, which stays
+alive. It never addresses the captain; you relay everything. On `reviewed:`:
+
+    ./bin/sheepr-review.sh collect <id>
+
+Report the findings in the captain's terms, then offer three things:
+
+- post them (pr only): ask which, run `sheepr-review.sh post <id> <n,n>`,
+  show the captain the exact review it prints, and only on their word run it
+  again with `--yes`. The reviewer never posts.
+- discuss them.
+- fix them: the captain picks findings, you draft a plan in
+  `briefs/<id>-fix.md`, and once they approve it,
+  `./bin/sheepr-send.sh <id> --reopen briefs/<id>-fix.md`. The same worker
+  carries it out, and its next done is offered a review again.
+
+Ask the merge question only once the findings are in. If the captain merges
+before that, nothing blocks it; any fix after the merge is a new task.
 
 Merging is the captain's word, never yours. When they give it, merge, then:
 
@@ -193,7 +218,8 @@ Each refuses rather than guesses. Read the header comment before using one.
 | `bin/sheepr-watch.sh` | the supervision loop, run in the background; `--once` for a single pass |
 | `bin/sheepr-fleet.sh` | read-only view of every worktree, task or not |
 | `bin/sheepr-status.sh` | `fold`, `open`, `append` on a status log |
-| `bin/sheepr-send.sh` | reply to a worker, resolve a key, answer a dialog, raise a budget |
+| `bin/sheepr-send.sh` | reply to a worker, resolve a key, answer a dialog, raise a budget, reopen on a fix plan |
+| `bin/sheepr-review.sh` | start a review, collect its findings, post them to the PR |
 | `bin/sheepr-teardown.sh` | retire a task once its work has landed |
 | `bin/sheepr-test.sh` | run the tests |
 | `bin/sheepr-usage.sh` | a task's tokens, or the supervisor's own (`self`) |

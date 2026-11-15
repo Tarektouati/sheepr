@@ -24,8 +24,11 @@
 #   done      finished, with delivery evidence in the text
 #   failed    gave up, with the reason in the text
 #
-# Verb only the supervisor writes:
+# Verbs only the supervisor writes:
 #   resolved  closes the question or blocker with the matching key
+#   reopened  sends a finished worker back to work on a fix plan the captain
+#             approved (bin/sheepr-send.sh --reopen). Folds as working: it
+#             clears the done, so the worker's next done is a new one.
 #
 # The fold reads the whole log in order, and reports, in this priority:
 #   1. a done or failed with no working, question or blocked after it. A
@@ -62,7 +65,7 @@ _sheepr_fold_awk() {
       # A worker that speaks again was not finished after all. Without this,
       # a question asked after a failed run stayed buried under the failure
       # and never reached the supervisor.
-      if (verb == "question" || verb == "blocked" || verb == "working") {
+      if (verb == "question" || verb == "blocked" || verb == "working" || verb == "reopened") {
         term_verb = ""; term_text = ""
       }
 
@@ -73,7 +76,7 @@ _sheepr_fold_awk() {
         live[key] = 1; kind[key] = verb; msg[key] = text; seen = 1
       } else if (verb == "resolved") {
         live[key] = 0; seen = 1
-      } else if (verb == "working") {
+      } else if (verb == "working" || verb == "reopened") {
         seen = 1
       }
       # anything else: ignored, deliberately

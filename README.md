@@ -693,3 +693,7 @@ decide what to do about them.
 The design owes a lot to [firstmate](https://github.com/kunchenguid/firstmate),
 which solves the same problem across five session backends and seven agent
 harnesses. sheepr is the small version: Herdr only.
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE).

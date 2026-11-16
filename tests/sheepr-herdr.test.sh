@@ -179,7 +179,7 @@ sheepr_model_valid 'claude-sonnet-4.5_x'; is "$?" '0' 'a model id with . - _ is 
 # herdr is stubbed by overriding the three calls the function makes. The
 # settle budget is one second, so the whole section costs a couple of seconds.
 
-STUB_STATE=done
+STUB_STATE="done"
 STUB_READS=no          # yes: the worker picks the prompt up and writes a line
 STATUS="$SHEEPR_HOME/tasks/t-verify/status"
 mkdir -p "$(dirname "$STATUS")"

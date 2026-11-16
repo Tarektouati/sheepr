@@ -346,11 +346,11 @@ inspect_task() {  # <task-id>
   # A done is woken for once, even after other wakes came between (a review's,
   # for one). It is remembered apart from .woke for that reason, and forgotten
   # as soon as the worker is no longer done.
-  [ "$state" = done ] || rm -f "$dir/.done-woke"
+  [ "$state" = "done" ] || rm -f "$dir/.done-woke"
 
   # 0. an open review on a done task has its own ladder. The worker is
   # finished and has nothing more to say.
-  if [ "$state" = done ] && sheepr_review_open "$id"; then
+  if [ "$state" = "done" ] && sheepr_review_open "$id"; then
     inspect_review "$id" "$dir"
     return $?
   fi

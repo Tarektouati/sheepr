@@ -17,6 +17,7 @@ set -o pipefail
 SHEEPR_ROOT="${SHEEPR_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SHEEPR_HOME="${SHEEPR_HOME:-$SHEEPR_ROOT}"
 SHEEPR_TASKS="$SHEEPR_HOME/tasks"
+# shellcheck disable=SC2034  # read by bin/sheepr-watch.sh, which sources this
 SHEEPR_WAKES="$SHEEPR_TASKS/.wakes"
 
 # Task ids must be safe as a directory name, a git branch component, and a

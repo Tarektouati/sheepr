@@ -5,6 +5,13 @@ A supervisor for a fleet of coding agents, in Herdr.
 You talk to one agent. It starts the others, watches them, and comes back to
 you only when something needs a decision.
 
+> [!WARNING]
+> **sheepr is experimental.** It encodes the author's personal workflow and is
+> not meant for anyone else. If you use it anyway, you do so at your own risk:
+> it supervises coding agents that run commands and change code. There is no
+> support and no promise of stable behaviour; things may change without notice.
+> See `LICENSE` for the warranty disclaimer.
+
 ## What it is
 
 About 1,700 lines of bash and one instruction file. There is nothing to

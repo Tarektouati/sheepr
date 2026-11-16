@@ -38,6 +38,14 @@
 #                         refused. Deliberately not a flag: which codex
 #                         profile works is a property of the machine the
 #                         fleet runs on, not of one task.
+#   SHEEPR_WORKER_PERMISSIONS
+#                         unset or empty: the worker starts with its
+#                         harness's permission checks on (the default).
+#                         `bypass`: the old flags, which turn them off
+#                         (claude --dangerously-skip-permissions, cursor
+#                         --force, codex -a never). Spawn warns and records
+#                         permissions=bypass in meta. Any other value is
+#                         refused. Never applies to a reviewer.
 #
 # The brief is never passed through argv. Every agent kind quotes, truncates
 # and strips characters differently, so the brief goes to a file and the
@@ -88,6 +96,14 @@ case "$DELIVERY" in
   pr|branch|local) ;;
   *) die "unknown --delivery '$DELIVERY' (pr, branch, or local)" ;;
 esac
+
+# Read once, before any side effect: a bad value is refused here rather than
+# after a worktree exists.
+PERMISSIONS=''
+if sheepr_worker_permissions_bypass; then
+  PERMISSIONS=bypass
+  warn "WARNING: SHEEPR_WORKER_PERMISSIONS=bypass. This worker starts with its harness's permission checks OFF and may run any command and write anywhere your user can, without asking."
+fi
 
 if [ -n "$MODEL" ]; then
   sheepr_model_valid "$MODEL" || die "--model '$MODEL' must match $SHEEPR_MODEL_RE"
@@ -182,6 +198,7 @@ sheepr_meta_set "$ID" delivery "$DELIVERY"
 [ -z "$MODEL" ] || sheepr_meta_set "$ID" model "$MODEL"
 [ -z "$BUDGET" ] || sheepr_meta_set "$ID" budget "$BUDGET"
 [ -z "$ROUTE" ] || sheepr_meta_set "$ID" route "$ROUTE"
+[ -z "$PERMISSIONS" ] || sheepr_meta_set "$ID" permissions "$PERMISSIONS"
 sheepr_meta_set "$ID" branch "$BRANCH"
 sheepr_meta_set "$ID" base "$BASE"
 sheepr_meta_set "$ID" created "$(sheepr_now)"

@@ -230,9 +230,28 @@ supervisor uses `cursor`.
 
 | kind | started with |
 |---|---|
-| `cursor` | `--force --trust`. Without `--trust` it stops at a trust dialog Herdr reports as `idle`. |
-| `claude` | `--dangerously-skip-permissions`. Its folder trust dialog is answered at start, and no other dialog is. |
-| `codex` | `-s workspace-write -a never --add-dir <task dir>`, so it can write its status log. Needs codex-cli 0.140 or newer. `SHEEPR_CODEX_PROFILE` adds `-p <profile>`. |
+| `cursor` | `--auto-review --sandbox enabled --trust`. Without `--trust` it stops at a trust dialog Herdr reports as `idle`. A persisted `"approvalMode": "unrestricted"` in `~/.cursor/cli-config.json` overrides `--auto-review` and starts it in Run Everything with no warning: set it back to auto-review or allowlist on a machine that runs workers. |
+| `claude` | `--permission-mode auto --add-dir <task dir>`, so it can write its status log. Its folder trust dialog is answered at start, and no other dialog is. |
+| `codex` | `-s workspace-write -a on-request --add-dir <task dir>`, so it can write its status log. Needs codex-cli 0.140 or newer. `SHEEPR_CODEX_PROFILE` adds `-p <profile>`. |
+
+Every worker starts with its harness's permission checks on. A reviewer
+always does, whatever is set below.
+
+### Turning permission checks off
+
+```sh
+export SHEEPR_WORKER_PERMISSIONS=bypass
+```
+
+restores the old worker flags: claude `--dangerously-skip-permissions`, cursor
+`--force --trust`, codex `-s workspace-write -a never`. Spawn prints a warning
+and records `permissions=bypass` in the task's meta. Unset or empty is the
+safe default, and any other value is refused.
+
+> **Warning:** with `bypass`, a worker runs any command and writes anywhere
+> your user can, without asking. A brief, a file in the repository or a web
+> page it reads can steer it into doing so. Use it only on a machine and
+> repositories you would hand to an unattended script.
 
 ## Worker reporting protocol
 
@@ -611,6 +630,7 @@ All optional. Durations are in seconds.
 | `CODEX_HOME` | `~/.codex` | where `sheepr-usage.sh` reads codex rollouts |
 | `SHEEPR_AGENTS_MAX_WORDS` | `3000` | the AGENTS.md word limit `sheepr-lint.sh` enforces |
 | `SHEEPR_CODEX_PROFILE` | unset | when set and non-empty, codex workers start with `-p <profile>`. Letters, digits, `-` and `_` only, and not a leading `-`; anything else is refused |
+| `SHEEPR_WORKER_PERMISSIONS` | unset | `bypass` starts workers with their harness's permission checks off (see Agent kinds). Unset or empty is the safe default; any other value is refused. Never applies to reviewers |
 
 Two variables are read but never set by you, because the harness sets them:
 

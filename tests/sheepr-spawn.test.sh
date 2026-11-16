@@ -114,6 +114,7 @@ case "$1 $2" in
       "$label" "$label" "$wt"
     ;;
   "agent get") printf '{"result":{"agent":{"agent":"cursor","agent_status":"working"}}}\n' ;;
+  "agent start") printf '%s\n' "$*" >>"$d/starts"; printf '{"result":{}}\n' ;;
   *) printf '{"result":{}}\n' ;;
 esac
 STUB_EOF
@@ -225,6 +226,48 @@ case "$out" in *'base branch is unknown'*) ok 'and the refusal says the base is 
   *) fail 'and the refusal says the base is unknown' "got: $out" ;; esac
 [ -e "$SHEEPR_HOME/tasks/nobase" ] && fail 'a spawn refused for its base claims no id' \
   || ok 'a spawn refused for its base claims no id'
+
+# --- worker permissions --------------------------------------------------------
+#
+# Permission checks are on unless SHEEPR_WORKER_PERMISSIONS=bypass. With it,
+# spawn warns and says so in meta; a bad value is refused before any side
+# effect.
+
+perm_spawn() {  # <setting> <id>
+  printf 'a brief\n' >"$SHEEPR_HOME/$2.md"
+  ( if [ "$1" = unset ]; then unset SHEEPR_WORKER_PERMISSIONS
+    else SHEEPR_WORKER_PERMISSIONS=$1; export SHEEPR_WORKER_PERMISSIONS; fi
+    run_bounded 10 stub_spawn "$2" "$SHEEPR_HOME/$2.md" )
+}
+
+: >"$STUB/starts"
+out=$(perm_spawn unset perm-safe); rc=$?
+is "$rc" '0' 'a spawn with no SHEEPR_WORKER_PERMISSIONS succeeds'
+case "$out" in *WARNING*) fail 'and prints no permissions warning' "got: $out" ;;
+  *) ok 'and prints no permissions warning' ;; esac
+grep -q '^permissions=' "$SHEEPR_HOME/tasks/perm-safe/meta" \
+  && fail 'and records no permissions key' || ok 'and records no permissions key'
+case "$(grep 'sheepr-perm-safe' "$STUB/starts")" in
+  *'--auto-review --sandbox enabled --trust'*) ok 'and the worker starts with the safe flags' ;;
+  *) fail 'and the worker starts with the safe flags' "got: $(cat "$STUB/starts")" ;; esac
+
+out=$(perm_spawn bypass perm-bypass); rc=$?
+is "$rc" '0' 'a spawn with SHEEPR_WORKER_PERMISSIONS=bypass succeeds'
+case "$out" in *'WARNING: SHEEPR_WORKER_PERMISSIONS=bypass'*'permission checks OFF'*) ok 'and warns that checks are off' ;;
+  *) fail 'and warns that checks are off' "got: $out" ;; esac
+is "$(grep '^permissions=' "$SHEEPR_HOME/tasks/perm-bypass/meta")" 'permissions=bypass' \
+  'and records permissions=bypass in meta'
+case "$(grep 'sheepr-perm-bypass' "$STUB/starts")" in
+  *'-- --force --trust'*) ok 'and the worker starts with the old flags' ;;
+  *) fail 'and the worker starts with the old flags' "got: $(cat "$STUB/starts")" ;; esac
+
+: >"$STUB/creates"
+out=$(perm_spawn yolo perm-bad); rc=$?
+is "$rc" '1' 'an unknown SHEEPR_WORKER_PERMISSIONS is refused'
+case "$out" in *'SHEEPR_WORKER_PERMISSIONS'*) ok 'and the refusal names the variable' ;;
+  *) fail 'and the refusal names the variable' "got: $out" ;; esac
+is "$(grep -c 'perm-bad' "$STUB/creates")" '0' 'and no worktree was asked for'
+[ -e "$SHEEPR_HOME/tasks/perm-bad" ] && fail 'and no id was claimed' || ok 'and no id was claimed'
 
 # The placeholder check reads the snapshot too, and still refuses.
 

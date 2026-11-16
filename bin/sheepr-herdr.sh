@@ -51,18 +51,53 @@ SHEEPR_AGENT_KINDS="cursor claude codex"
 # Filled empirically by starting each kind in a scratch worktree workspace and
 # recording what actually reaches an interactive prompt. Do not guess here.
 #
-# cursor: without --trust it stops at a workspace trust dialog that herdr
-#         reports as `idle`, not `blocked`. That combination is invisible to
-#         any state check, so the flag is mandatory, not a convenience.
-# claude: --dangerously-skip-permissions reaches "bypass permissions on".
-# codex:  workspace-write plus never-ask is enough, but an out-of-date codex
-#         stops at an update prompt. herdr does report that one as `blocked`.
+# Workers start with each harness's permission checks ON. Checked live on
+# 2026-11-16 (herdr 0.9.5, macOS) by starting each kind with these flags in a
+# scratch worktree workspace, the status file in a directory under $HOME,
+# outside both the worktree and tmp, as $SHEEPR_HOME/tasks/<id>/ is:
+#
+# claude: --permission-mode auto --add-dir <task dir>. claude 2.1.325 reaches
+#         "auto mode on" (its folder trust dialog, if shown, is answered by
+#         sheepr_kind_clear_startup_dialog as before). Told
+#         to append a line to the status file, it did, with no prompt.
+#         No auto-mode opt-in dialog appeared, but that machine had already
+#         seen one (hasSeenAutoModeEntryWarning in ~/.claude.json), so a fresh
+#         machine may still stop at one. It is left unanswered until seen.
+# cursor: --auto-review --sandbox enabled --trust. Without --trust it stops at
+#         a workspace trust dialog that herdr reports as `idle`, not
+#         `blocked`. That combination is invisible to any state check, so the
+#         flag is mandatory, not a convenience. cursor-agent 2026.11.13: no
+#         opt-in dialog at startup, footer "Auto-review". The status append
+#         ran with no prompt: the model asked to run outside the sandbox and
+#         the auto-review classifier approved it, so it depends on the
+#         classifier, not on the sandbox allowing the path.
+#         CAUTION: a persisted `"approvalMode": "unrestricted"` in
+#         ~/.cursor/cli-config.json wins over --auto-review. With it, the
+#         same flags start in "Run Everything" with no warning, and a write
+#         outside the workspace succeeded under --sandbox enabled. Confirmed
+#         by the same launch against a copy of that config set to
+#         "allowlist", whose footer read "Auto-review".
+# codex:  -s workspace-write -a on-request --add-dir <task dir>. codex-cli
+#         0.140.0 launched with these flags reaches its prompt; an
+#         out-of-date codex first stops at an update prompt, and a
+#         repository it has never trusted at a folder trust dialog (both
+#         reported `blocked`, and both seen with the old `-a never` too).
+#         NOT checked: a full codex worker turn, as no bridge profile was
+#         configured on the machine that verified it and the account refused
+#         codex's own models. The sandbox half was checked with `codex
+#         sandbox -c sandbox_mode="workspace-write"` and the task dir as a
+#         writable root: the status append succeeds, a write to a sibling
+#         directory is refused ("Operation not permitted").
 #
 #         workspace-write also permits writes only inside the worktree and
 #         tmp, and the task's status log is in $SHEEPR_HOME/tasks/<id>/, which
 #         is neither. Without --add-dir on that directory the worker's every
 #         append is denied and it can never report question, blocked or done.
 #         Needs codex-cli 0.140 or newer.
+#
+# SHEEPR_WORKER_PERMISSIONS=bypass restores the old worker flags exactly:
+# claude --dangerously-skip-permissions, cursor --force --trust, codex
+# -s workspace-write -a never --add-dir <task dir>. Workers only.
 #
 #         SHEEPR_CODEX_PROFILE, when set and non-empty, starts codex under
 #         `-p <profile>`. Unset, codex picks its own profile as before.
@@ -95,29 +130,60 @@ sheepr_kind_bin() {  # <kind>
   esac
 }
 
-# Fill SHEEPR_KIND_ARGS with the native launch args for <kind>.
+# SHEEPR_WORKER_PERMISSIONS=bypass restores the old worker launch flags, which
+# turn every harness's permission checks off. Workers only: a reviewer never
+# reads it. Unset or empty is the safe default; any other value is refused,
+# because a typo must not silently pick either side.
+#
+# Returns 0 when bypass is asked for, 1 for the default.
+sheepr_worker_permissions_bypass() {
+  case "${SHEEPR_WORKER_PERMISSIONS:-}" in
+    '') return 1 ;;
+    bypass) return 0 ;;
+    *) die "SHEEPR_WORKER_PERMISSIONS must be unset, empty, or 'bypass' (got '$SHEEPR_WORKER_PERMISSIONS')" ;;
+  esac
+}
+
+# Fill SHEEPR_KIND_ARGS with the native launch args for a WORKER of <kind>:
+# the safe flags from the table above, or the old bypass flags when
+# SHEEPR_WORKER_PERMISSIONS=bypass. The task directory reaches claude and
+# codex as --add-dir, so the worker can append to its status log.
 #
 # An array rather than a string: the codex task directory is a path the
 # captain chose, and a caller that word-splits a flat string would cut one
 # containing a space into two arguments, the tail of which codex reads as a
 # flag.
 sheepr_kind_args() {  # <kind> [task-dir] [model]
-  local kind=$1 task_dir=${2:-} model=${3:-}
+  local kind=$1 task_dir=${2:-} model=${3:-} bypass=0
   SHEEPR_KIND_ARGS=()
   if [ -n "$model" ]; then
     sheepr_model_valid "$model" || die "model '$model' must match $SHEEPR_MODEL_RE"
   fi
+  sheepr_worker_permissions_bypass && bypass=1
   case "$kind" in
     cursor)
-      SHEEPR_KIND_ARGS=(--force --trust)
+      if [ "$bypass" = 1 ]; then
+        SHEEPR_KIND_ARGS=(--force --trust)
+      else
+        SHEEPR_KIND_ARGS=(--auto-review --sandbox enabled --trust)
+      fi
       [ -z "$model" ] || SHEEPR_KIND_ARGS+=(--model "$model")
       ;;
     claude)
-      SHEEPR_KIND_ARGS=(--dangerously-skip-permissions)
+      if [ "$bypass" = 1 ]; then
+        SHEEPR_KIND_ARGS=(--dangerously-skip-permissions)
+      else
+        SHEEPR_KIND_ARGS=(--permission-mode auto)
+        [ -z "$task_dir" ] || SHEEPR_KIND_ARGS+=(--add-dir "$task_dir")
+      fi
       [ -z "$model" ] || SHEEPR_KIND_ARGS+=(--model "$model")
       ;;
     codex)
-      SHEEPR_KIND_ARGS=(-s workspace-write -a never)
+      if [ "$bypass" = 1 ]; then
+        SHEEPR_KIND_ARGS=(-s workspace-write -a never)
+      else
+        SHEEPR_KIND_ARGS=(-s workspace-write -a on-request)
+      fi
       if [ -n "$task_dir" ]; then
         SHEEPR_KIND_ARGS+=(--add-dir "$task_dir")
       fi

@@ -1,0 +1,26 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Some tests commit in scratch repositories.
+      - run: |
+          git config --global user.name sheepr-ci
+          git config --global user.email ci@example.invalid
+      # Tests that need a live Herdr print `skip:`; there is none here.
+      - name: tests
+        run: ./bin/sheepr-test.sh
+      # shellcheck is preinstalled on ubuntu-latest, so lint runs it here.
+      - name: lint
+        run: |
+          shellcheck --version
+          ./bin/sheepr-lint.sh

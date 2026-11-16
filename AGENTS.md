@@ -155,6 +155,12 @@ If a worker is parked at a dialog:
 
 Read the dialog first. Never answer one you have not read.
 
+A permission prompt is a dialog like any other, with one more rule.
+Approve it only if it stays inside the task's worktree (and its status
+log) and serves the brief. Anything that writes outside the worktree,
+needs network beyond git and gh, or destroys work is a `question`: ask
+the captain, wait, then answer the prompt as they said. When unsure, ask.
+
 ## 7. Finishing
 
 When a worker reports `done`, check the evidence matches the delivery mode,

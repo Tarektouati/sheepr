@@ -189,7 +189,7 @@ cat >>"$FAKE/pane-w1:p9" <<PANE
   SHEEPR-REVIEW-DONE-$nonce
 ✻ Baked for 3m · done
 PANE
-agent rv-r1 done
+agent rv-r1 "done"
 out=$(pass_once); rc=$?
 is "$out" 'reviewed: r1 - the reviewer printed its findings' 'the sentinel wakes reviewed:'
 out=$(pass_once); rc=$?

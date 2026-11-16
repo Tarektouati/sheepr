@@ -92,6 +92,13 @@ against fresh input plus output tokens; cache reads and cache creation do not
 count. Reaching it interrupts the worker and wakes the supervisor (**over
 budget**). The work is kept. `bin/sheepr-send.sh <id> --budget` raises it.
 
+**permission prompt** - a dialog in which a worker's harness asks before it
+runs a command or writes a file. Workers start with their harness's
+permission checks on, so they can stop at one. The supervisor approves it
+only when it stays inside the task's worktree and status log and serves the
+brief; anything else is a question for the captain. `SHEEPR_WORKER_PERMISSIONS=bypass`
+turns the checks off for workers, never for reviewers.
+
 ## Actions
 
 **spawn** - create a task and start its worker. `bin/sheepr-spawn.sh`.

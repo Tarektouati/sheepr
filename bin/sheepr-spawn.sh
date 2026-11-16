@@ -19,6 +19,8 @@
 #     supervisor must ask the captain and pass the answer explicitly, because
 #     guessing how finished work reaches a human is never recoverable.
 #   - when the brief still contains a {{placeholder}}.
+#   - a cursor worker whose saved config would override its permission
+#     checks (see CURSOR_CONFIG_DIR below).
 #   - when the task id is already in use, including by a spawn still running.
 #   - when flock is missing or cannot read the repository. Spawn records the
 #     base branch flock detects as `base` in meta (origin/<base> when the
@@ -46,6 +48,11 @@
 #                         --force, codex -a never). Spawn warns and records
 #                         permissions=bypass in meta. Any other value is
 #                         refused. Never applies to a reviewer.
+#   CURSOR_CONFIG_DIR     where cursor's cli-config.json is read from
+#                         (default ~/.cursor). A cursor worker is refused
+#                         when it holds "approvalMode": "unrestricted",
+#                         which silently overrides --auto-review, unless
+#                         SHEEPR_WORKER_PERMISSIONS=bypass.
 #
 # The brief is never passed through argv. Every agent kind quotes, truncates
 # and strips characters differently, so the brief goes to a file and the
@@ -103,6 +110,10 @@ PERMISSIONS=''
 if sheepr_worker_permissions_bypass; then
   PERMISSIONS=bypass
   warn "WARNING: SHEEPR_WORKER_PERMISSIONS=bypass. This worker starts with its harness's permission checks OFF and may run any command and write anywhere your user can, without asking."
+fi
+# Only with the checks on: under bypass the worker has none to override.
+if [ -z "$PERMISSIONS" ] && [ "$KIND" = cursor ]; then
+  sheepr_cursor_config_check
 fi
 
 if [ -n "$MODEL" ]; then

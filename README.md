@@ -230,7 +230,7 @@ supervisor uses `cursor`.
 
 | kind | started with |
 |---|---|
-| `cursor` | `--auto-review --sandbox enabled --trust`. Without `--trust` it stops at a trust dialog Herdr reports as `idle`. A persisted `"approvalMode": "unrestricted"` in `~/.cursor/cli-config.json` overrides `--auto-review` and starts it in Run Everything with no warning: set it back to auto-review or allowlist on a machine that runs workers. |
+| `cursor` | `--auto-review --sandbox enabled --trust`. Without `--trust` it stops at a trust dialog Herdr reports as `idle`. A persisted `"approvalMode": "unrestricted"` in `~/.cursor/cli-config.json` (or `$CURSOR_CONFIG_DIR`) silently overrides `--auto-review` and would start the worker in Run Everything, so spawn refuses a cursor worker on such a machine. Set `approvalMode` to `allowlist`, or use `SHEEPR_WORKER_PERMISSIONS=bypass` to run without checks knowingly. A config spawn cannot parse is refused too. |
 | `claude` | `--permission-mode auto --add-dir <task dir>`, so it can write its status log. Its folder trust dialog is answered at start, and no other dialog is. |
 | `codex` | `-s workspace-write -a on-request --add-dir <task dir>`, so it can write its status log. Needs codex-cli 0.140 or newer. `SHEEPR_CODEX_PROFILE` adds `-p <profile>`. |
 

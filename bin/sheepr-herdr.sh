@@ -58,11 +58,14 @@ SHEEPR_AGENT_KINDS="cursor claude codex"
 #
 # claude: --permission-mode auto --add-dir <task dir>. claude 2.1.325 reaches
 #         "auto mode on" (its folder trust dialog, if shown, is answered by
-#         sheepr_kind_clear_startup_dialog as before). Told
-#         to append a line to the status file, it did, with no prompt.
-#         No auto-mode opt-in dialog appeared, but that machine had already
-#         seen one (hasSeenAutoModeEntryWarning in ~/.claude.json), so a fresh
-#         machine may still stop at one. It is left unanswered until seen.
+#         sheepr_kind_clear_startup_dialog as before). Told to append a line
+#         to the status file, it did, with no prompt ("Allowed by auto mode").
+#         There is no auto-mode opt-in dialog. Checked on a fresh config (a
+#         scratch CLAUDE_CONFIG_DIR holding only the credentials): after
+#         first-run onboarding and the folder trust dialog, claude prints an
+#         informational notice ("Auto mode lets Claude handle permission
+#         prompts automatically ...") and is at its prompt, with nothing to
+#         answer. So no case is added for it.
 # cursor: --auto-review --sandbox enabled --trust. Without --trust it stops at
 #         a workspace trust dialog that herdr reports as `idle`, not
 #         `blocked`. That combination is invisible to any state check, so the
@@ -77,27 +80,27 @@ SHEEPR_AGENT_KINDS="cursor claude codex"
 #         outside the workspace succeeded under --sandbox enabled. Confirmed
 #         by the same launch against a copy of that config set to
 #         "allowlist", whose footer read "Auto-review".
+#         So spawn refuses a cursor worker on such a machine
+#         (sheepr_cursor_config_check), unless the captain chose bypass.
 # codex:  -s workspace-write -a on-request --add-dir <task dir>. codex-cli
 #         0.140.0 launched with these flags reaches its prompt; an
 #         out-of-date codex first stops at an update prompt, and a
 #         repository it has never trusted at a folder trust dialog (both
 #         reported `blocked`, and both seen with the old `-a never` too).
-#         NOT checked: a full codex worker turn, as no bridge profile was
-#         configured on the machine that verified it and the account refused
-#         codex's own models. The sandbox half was checked with `codex
-#         sandbox -c sandbox_mode="workspace-write"` and the task dir as a
-#         writable root: the status append succeeds, a write to a sibling
-#         directory is refused ("Operation not permitted").
+#         A full worker turn was checked through codex-cursor-bridge
+#         (SHEEPR_CODEX_PROFILE=cursor-bridge, -m composer-2.5): told to
+#         append to the status file, it ran the command with no approval
+#         prompt. Told to write to a sibling directory outside --add-dir, the
+#         sandbox refused it ("operation not permitted") and codex did not
+#         ask to escalate. Without the bridge, codex's own models are refused
+#         on a ChatGPT account ("The 'gpt-5.5' model is not supported when
+#         using Codex with a ChatGPT account.").
 #
 #         workspace-write also permits writes only inside the worktree and
 #         tmp, and the task's status log is in $SHEEPR_HOME/tasks/<id>/, which
 #         is neither. Without --add-dir on that directory the worker's every
 #         append is denied and it can never report question, blocked or done.
 #         Needs codex-cli 0.140 or newer.
-#
-# SHEEPR_WORKER_PERMISSIONS=bypass restores the old worker flags exactly:
-# claude --dangerously-skip-permissions, cursor --force --trust, codex
-# -s workspace-write -a never --add-dir <task dir>. Workers only.
 #
 #         SHEEPR_CODEX_PROFILE, when set and non-empty, starts codex under
 #         `-p <profile>`. Unset, codex picks its own profile as before.
@@ -106,6 +109,11 @@ SHEEPR_AGENT_KINDS="cursor claude codex"
 #         codex runs only through codex-cursor-bridge, so its model is a Cursor
 #         model id; bin/sheepr-route.sh checks it against the bridge catalog.
 #         With no model, each harness runs its own default.
+#
+# bypass: SHEEPR_WORKER_PERMISSIONS=bypass restores the old worker flags
+#         exactly: claude --dangerously-skip-permissions, cursor --force
+#         --trust, codex -s workspace-write -a never --add-dir <task dir>.
+#         Workers only; a reviewer never reads it.
 
 # Letters, digits, `-` and `_`, and never a leading `-`: a value codex would
 # read as a flag rather than as the name of a profile is not a profile.
@@ -128,6 +136,30 @@ sheepr_kind_bin() {  # <kind>
     codex)  printf 'codex' ;;
     *) return 1 ;;
   esac
+}
+
+# Refuse a cursor worker whose saved config would silently undo its checks.
+#
+# A persisted `"approvalMode": "unrestricted"` in cursor's cli-config.json
+# wins over --auto-review (see the launch table), so the worker would start in
+# Run Everything with no checks at all, and nothing on screen says so. A
+# missing file or a missing key is cursor's default, not unrestricted. A file
+# that exists but cannot be read or parsed is refused: guessing it safe is how
+# a worker runs unchecked.
+#
+# Returns 0 when the config is fine; dies otherwise.
+sheepr_cursor_config_check() {
+  local dir=${CURSOR_CONFIG_DIR:-$HOME/.cursor} file mode
+  file="$dir/cli-config.json"
+  [ -e "$file" ] || return 0
+  command -v jq >/dev/null 2>&1 || die "jq is required to read cursor's config $file"
+  [ -r "$file" ] || die "cannot read cursor's config $file, so whether it overrides --auto-review is unknown"
+  mode=$(jq -r 'if type == "object" then (.approvalMode // "") else error("not an object") end' "$file" 2>/dev/null) \
+    || die "cursor's config $file is not valid JSON, so whether it overrides --auto-review is unknown"
+  if [ "$mode" = unrestricted ]; then
+    die "cursor's config $file has \"approvalMode\": \"unrestricted\", which silently overrides --auto-review: this worker would start with no permission checks at all. Set approvalMode to \"allowlist\" in that file, or set SHEEPR_WORKER_PERMISSIONS=bypass to accept running without checks knowingly."
+  fi
+  return 0
 }
 
 # SHEEPR_WORKER_PERMISSIONS=bypass restores the old worker launch flags, which

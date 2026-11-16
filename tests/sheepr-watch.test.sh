@@ -133,7 +133,7 @@ is "$(grep -c '' "$SHEEPR_WAKES")" '1' 'exactly one row reached the wake queue'
 # fold still reports the oldest open question, so the signature is unchanged
 # and the captain is not asked the same thing twice.
 printf 'question|3|k2|and another?\n' >>"$d/status"
-out3=$(pass_once); rc3=$?
+(pass_once >/dev/null); rc3=$?
 is "$rc3" '1' 'a second question is absorbed while the first is still open'
 is "$(grep -c '' "$SHEEPR_WAKES")" '1' 'the wake queue did not grow'
 
@@ -147,7 +147,7 @@ is "$(grep -c '' "$SHEEPR_WAKES")" '2' 'the wake queue grew to two rows'
 # Resolving everything returns the task to silence.
 printf 'resolved|5|k2|\n' >>"$d/status"
 STUB_STATE=working
-out5=$(pass_once); rc5=$?
+(pass_once >/dev/null); rc5=$?
 is "$rc5" '1' 'a task with nothing open and a working agent is silent'
 
 # Finding a wake records nothing; only delivering it does.

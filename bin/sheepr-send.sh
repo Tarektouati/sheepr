@@ -95,7 +95,7 @@ if [ "$1" = "--reopen" ]; then
     die "fix brief still contains placeholders: $(grep -o '{{[^}]*}}' "$PLAN" | sort -u | tr '\n' ' ')"
   fi
   fold=$(sheepr_status_fold "$ID")
-  [ "${fold%%|*}" = done ] || die "refusing to reopen $ID: its fold is '${fold%%|*}', not done"
+  [ "${fold%%|*}" = "done" ] || die "refusing to reopen $ID: its fold is '${fold%%|*}', not done"
   sheepr_review_open "$ID" \
     && die "refusing to reopen $ID: a review is open; collect it first (sheepr-review.sh collect $ID)"
   WORKTREE=$(sheepr_meta_get "$ID" worktree) || die "task $ID has no recorded worktree"

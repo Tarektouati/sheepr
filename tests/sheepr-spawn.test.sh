@@ -269,6 +269,59 @@ case "$out" in *'SHEEPR_WORKER_PERMISSIONS'*) ok 'and the refusal names the vari
 is "$(grep -c 'perm-bad' "$STUB/creates")" '0' 'and no worktree was asked for'
 [ -e "$SHEEPR_HOME/tasks/perm-bad" ] && fail 'and no id was claimed' || ok 'and no id was claimed'
 
+# --- cursor's saved config ------------------------------------------------------
+#
+# A persisted approvalMode of unrestricted silently overrides --auto-review, so
+# a cursor worker would start with no checks. Spawn refuses it before any side
+# effect, unless the captain chose bypass.
+
+cfg="$CURSOR_CONFIG_DIR/cli-config.json"
+mkdir -p "$CURSOR_CONFIG_DIR"
+
+printf '{"approvalMode":"unrestricted","sandbox":{"mode":"disabled"}}\n' >"$cfg"
+: >"$STUB/creates"
+out=$(perm_spawn unset cur-unres); rc=$?
+is "$rc" '1' 'a cursor worker is refused when its config is unrestricted'
+case "$out" in *'silently overrides --auto-review'*'no permission checks'*'allowlist'*'SHEEPR_WORKER_PERMISSIONS=bypass'*)
+  ok 'and the refusal says why and both ways out' ;;
+  *) fail 'and the refusal says why and both ways out' "got: $out" ;; esac
+is "$(grep -c 'cur-unres' "$STUB/creates")" '0' 'and no worktree was asked for'
+[ -e "$SHEEPR_HOME/tasks/cur-unres" ] && fail 'and no id was claimed' || ok 'and no id was claimed'
+
+out=$(perm_spawn bypass cur-unres-bypass); rc=$?
+is "$rc" '0' 'bypass skips the cursor config check'
+
+printf '{"approvalMode":"allowlist"}\n' >"$cfg"
+out=$(perm_spawn unset cur-allow); rc=$?
+is "$rc" '0' 'a cursor worker is accepted when its config is allowlist'
+
+printf '{"model":"x"}\n' >"$cfg"
+out=$(perm_spawn unset cur-nokey); rc=$?
+is "$rc" '0' 'a config with no approvalMode is accepted'
+
+rm -f "$cfg"
+out=$(perm_spawn unset cur-nofile); rc=$?
+is "$rc" '0' 'a missing cursor config is accepted'
+
+printf '{"approvalMode": "unrestricted",\n' >"$cfg"
+out=$(perm_spawn unset cur-bad); rc=$?
+is "$rc" '1' 'a malformed cursor config is refused, not guessed'
+case "$out" in *'not valid JSON'*) ok 'and the refusal says the config is unreadable' ;;
+  *) fail 'and the refusal says the config is unreadable' "got: $out" ;; esac
+[ -e "$SHEEPR_HOME/tasks/cur-bad" ] && fail 'and no id was claimed' || ok 'and no id was claimed'
+
+printf '"unrestricted"\n' >"$cfg"
+out=$(perm_spawn unset cur-notobj); rc=$?
+is "$rc" '1' 'a config that is not a JSON object is refused'
+
+printf '{"approvalMode":"unrestricted"}\n' >"$cfg"
+out=$(printf 'a brief\n' >"$SHEEPR_HOME/cur-claude.md"; unset SHEEPR_WORKER_PERMISSIONS
+      run_bounded 10 env PATH="$STUB:$PATH" HERDR_ENV=1 STUB_DIR="$STUB" SHEEPR_HOME="$SHEEPR_HOME" \
+        SHEEPR_FLOCK="$SHEEPR_FLOCK" "$SHEEPR_ROOT/bin/sheepr-spawn.sh" "$REPO" cur-claude \
+        --kind claude --delivery local --brief "$SHEEPR_HOME/cur-claude.md" 2>&1); rc=$?
+is "$rc" '0' 'the cursor config does not affect a claude worker'
+rm -f "$cfg"
+
 # The placeholder check reads the snapshot too, and still refuses.
 
 printf 'fix {{thing}} please\n' >"$SHEEPR_HOME/ph.md"

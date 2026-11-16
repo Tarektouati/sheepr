@@ -27,6 +27,12 @@ SHEEPR_CLAUDE_HOME="$SHEEPR_HOME/claude-home"
 CODEX_HOME="$SHEEPR_HOME/codex-home"
 export SHEEPR_CLAUDE_HOME CODEX_HOME
 
+# And cursor's config: spawn refuses a cursor worker whose real config is
+# unrestricted, and a test must not depend on the machine it runs on. Empty
+# (no cli-config.json) by default.
+CURSOR_CONFIG_DIR="$SHEEPR_HOME/cursor-config"
+export CURSOR_CONFIG_DIR
+
 cleanup_home() { [ -n "${SHEEPR_HOME:-}" ] && rm -rf "$SHEEPR_HOME"; }
 trap cleanup_home EXIT
 

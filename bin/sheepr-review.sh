@@ -168,7 +168,7 @@ cmd_start() {
 
   local fold state
   fold=$(sheepr_status_fold "$id"); state=${fold%%|*}
-  [ "$state" = done ] || die "refusing to review $id: its fold is '$state', not done"
+  [ "$state" = "done" ] || die "refusing to review $id: its fold is '$state', not done"
   sheepr_review_open "$id" && die "refusing to review $id: a review is already open (sheepr-review.sh collect $id)"
 
   local delivery worktree branch base pane target head=''

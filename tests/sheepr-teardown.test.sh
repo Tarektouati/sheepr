@@ -44,7 +44,7 @@ EOF
 
 teardown() { SHEEPR_HOME="$SHEEPR_HOME" "$SHEEPR_ROOT/bin/sheepr-teardown.sh" "$@" 2>&1; }
 
-archived() { ls "$SHEEPR_HOME/tasks/.archive/" 2>/dev/null | grep -q "^$1-"; }
+archived() { compgen -G "$SHEEPR_HOME/tasks/.archive/$1-*" >/dev/null; }
 
 # refused <id> <expected-substring> <description>
 refused() {

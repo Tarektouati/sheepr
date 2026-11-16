@@ -152,6 +152,13 @@ sheepr_lock_holder() {  # <lock-path>
 
 sheepr_now() { date +%s; }
 
+# A file's mtime in epoch seconds. GNU first: on Linux `stat -f` means
+# filesystem status, which succeeds and prints a report instead of a time.
+# BSD stat (macOS) rejects -c, so falling back to -f %m is safe there.
+sheepr_mtime() {  # <file>
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
+}
+
 sheepr_ensure_home() {
   mkdir -p "$SHEEPR_TASKS"
 }

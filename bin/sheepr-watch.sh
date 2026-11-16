@@ -200,7 +200,7 @@ inspect_budget() {  # <task-id> <dir> [role]
           # Normal for an agent that has only just started. Give it the stall
           # window to write its first counts before calling it unenforced.
           [ -f "$since" ] || touch "$since"
-          began=$(stat -f %m "$since" 2>/dev/null || stat -c %Y "$since" 2>/dev/null) || began=0
+          began=$(sheepr_mtime "$since") || began=0
           if [ $(( $(sheepr_now) - began )) -lt "$SHEEPR_STALL" ]; then
             triage "$id" "${who}usage unknown ($reason); waiting before warning"
             return 1
@@ -314,7 +314,7 @@ inspect_review() {  # <task-id> <dir>
     return 1
   fi
   local began age wt
-  began=$(stat -f %m "$dir/.review-quiet-since" 2>/dev/null || stat -c %Y "$dir/.review-quiet-since" 2>/dev/null) || began=0
+  began=$(sheepr_mtime "$dir/.review-quiet-since") || began=0
   age=$(( $(sheepr_now) - began ))
   if [ "$age" -lt "$SHEEPR_STALL" ]; then
     triage "$id" "reviewer quiet ${age}s of ${SHEEPR_STALL}s (agent=$agent)"
@@ -415,7 +415,7 @@ inspect_task() {  # <task-id>
   fi
 
   local began age
-  began=$(stat -f %m "$dir/.quiet-since" 2>/dev/null || stat -c %Y "$dir/.quiet-since" 2>/dev/null) || began=0
+  began=$(sheepr_mtime "$dir/.quiet-since") || began=0
   age=$(( $(sheepr_now) - began ))
   if [ "$age" -lt "$SHEEPR_STALL" ]; then
     triage "$id" "quiet ${age}s of ${SHEEPR_STALL}s (agent=$agent)"
